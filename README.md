@@ -47,9 +47,8 @@ cd windows
 
 En la PS5 aparecerá una notificación con las direcciones. La primera vez
 genera las claves del servidor SFTP, así que puede tardar un poco más en
-arrancar. Al arrancar, ps5share **detiene el ftpsrv original** (no tiene
-contraseña y daría acceso a todo el disco a cualquiera); se puede desactivar en
-Ajustes.
+arrancar. ps5share no detiene ningún otro payload: si tienes el ftpsrv
+original u otra app que lo lleve dentro (como Machete IA), siguen funcionando.
 
 ### 2. Crear el administrador y los usuarios
 
@@ -81,9 +80,12 @@ En la página de estado de Tailscale (`http://192.168.100.208:8090`):
 
 1. Inicia sesión en tu cuenta de Tailscale.
 2. **Pon una contraseña** a esa página.
-3. En *Settings → TCP ports never exposed* añade **8080, 9021, 2323, 3232**.
-   Son websrv, el cargador de payloads, la shell y el log de otros payloads:
-   ninguno pide contraseña y no deben quedar accesibles desde fuera.
+3. En *Settings → TCP ports never exposed* añade **2121, 8080, 9021, 2323,
+   3232**. Son ftpsrv (también el que llevan apps como Machete IA), websrv, el
+   cargador de payloads, la shell y el log de otros payloads: ninguno pide
+   contraseña y no deben quedar accesibles desde fuera. Ojo: Tailscale en la
+   PS5 publica también los servicios que solo escuchan en `127.0.0.1`. Si no
+   quieres que nadie más de tu tailnet use Machete IA, añade también **7860**.
 4. Apunta la IP de Tailscale de la PS5 (`100.x.y.z`). Si activas el FTP,
    pégala también en **ps5share → Ajustes → IP de Tailscale** (solo la usa el
    FTP pasivo; SFTP no la necesita).
@@ -215,7 +217,6 @@ set	http_port	8000
 set	pasv_min	50000
 set	pasv_max	50099
 set	pasv_address	100.101.102.103
-set	kill_ftpsrv	1
 set	sftp_port	2222
 set	sftp_enabled	1
 set	ftp_enabled	0

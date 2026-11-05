@@ -208,7 +208,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
         </div>
         <label class="f">IP de Tailscale de la PS5 (solo para FTP pasivo remoto)</label>
         <input type="text" name="pasv_address" placeholder="100.x.y.z">
-        <label class="check"><input type="checkbox" name="kill_ftpsrv"> Detener el ftpsrv original al arrancar (recomendado: no tiene contraseña)</label>
+        <div class="hint">Si usas otra app que lleve su propio ftpsrv (p. ej. Machete IA, que usa el 2121), elige otro puerto FTP, como 2122.</div>
         <div class="err" id="e-settings"></div>
         <button class="btn primary">Guardar ajustes</button>
 
@@ -554,7 +554,7 @@ async function loadSettings(){
   try { s = await api("GET", "/api/admin/settings"); } catch(e) { return toast(e.message); }
   const f = $("#f-settings");
   for (const k of ["ftp_port","http_port","sftp_port","pasv_min","pasv_max","pasv_address"]) f[k].value = s[k];
-  for (const k of ["kill_ftpsrv","sftp_enabled","ftp_enabled"]) f[k].checked = s[k];
+  for (const k of ["sftp_enabled","ftp_enabled"]) f[k].checked = s[k];
   const fps = $("#fps"); fps.textContent = "";
   if (s.fp_ecdsa) fps.append(el("div", {}, "ECDSA: ", el("code", {}, s.fp_ecdsa)));
   if (s.fp_rsa) fps.append(el("div", {}, "RSA: ", el("code", {}, s.fp_rsa)));
@@ -574,7 +574,7 @@ $("#f-settings").addEventListener("submit", async ev => {
   try {
     await api("POST", "/api/admin/settings", form({ftp_port:f.ftp_port.value, http_port:f.http_port.value,
       sftp_port:f.sftp_port.value, pasv_min:f.pasv_min.value, pasv_max:f.pasv_max.value,
-      pasv_address:f.pasv_address.value.trim(), kill_ftpsrv: f.kill_ftpsrv.checked ? "1" : "0",
+      pasv_address:f.pasv_address.value.trim(), 
       sftp_enabled: f.sftp_enabled.checked ? "1" : "0", ftp_enabled: f.ftp_enabled.checked ? "1" : "0"}));
     toast("Ajustes guardados");
   } catch(e) { $("#e-settings").textContent = e.message; }

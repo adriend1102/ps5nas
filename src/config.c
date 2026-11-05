@@ -248,7 +248,6 @@ defaults(settings_t *s) {
   s->http_port = 8000;   /* 8080 lo usa websrv */
   s->pasv_min = 50000;
   s->pasv_max = 50099;
-  s->kill_ftpsrv = 1;
   s->sftp_port = 2222;
   s->sftp_enabled = 1;
   s->ftp_enabled = 0;
@@ -289,7 +288,7 @@ load_file(const char *path) {
       else if(!strcmp(k, "http_port")) g_settings.http_port = atoi(v);
       else if(!strcmp(k, "pasv_min")) g_settings.pasv_min = atoi(v);
       else if(!strcmp(k, "pasv_max")) g_settings.pasv_max = atoi(v);
-      else if(!strcmp(k, "kill_ftpsrv")) g_settings.kill_ftpsrv = atoi(v);
+      /* "kill_ftpsrv" (versiones anteriores) se ignora */
       else if(!strcmp(k, "sftp_port")) g_settings.sftp_port = atoi(v);
       else if(!strcmp(k, "sftp_enabled")) g_settings.sftp_enabled = atoi(v);
       else if(!strcmp(k, "ftp_enabled")) g_settings.ftp_enabled = atoi(v);
@@ -339,7 +338,6 @@ cfg_save_locked(void) {
   fprintf(f, "set\tpasv_min\t%u\n", g_settings.pasv_min);
   fprintf(f, "set\tpasv_max\t%u\n", g_settings.pasv_max);
   fprintf(f, "set\tpasv_address\t%s\n", g_settings.pasv_address);
-  fprintf(f, "set\tkill_ftpsrv\t%d\n", g_settings.kill_ftpsrv);
   fprintf(f, "set\tsftp_port\t%u\n", g_settings.sftp_port);
   fprintf(f, "set\tsftp_enabled\t%d\n", g_settings.sftp_enabled);
   fprintf(f, "set\tftp_enabled\t%d\n", g_settings.ftp_enabled);

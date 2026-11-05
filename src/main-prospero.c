@@ -90,13 +90,8 @@ main(int argc, char *argv[]) {
   /* Solo una instancia de ps5share. */
   kill_all("ps5share.elf");
 
-  /* El ftpsrv original no tiene contraseña y daría acceso a todo el
-     disco a cualquiera que llegue por Tailscale, así que lo paramos. */
-  cfg_init(dir);
-  cfg_lock();
-  int kill_ftpsrv = cfg_settings()->kill_ftpsrv;
-  cfg_unlock();
-  if(kill_ftpsrv) kill_all("ftpsrv.elf");
+  /* No se detiene ningún otro proceso: otras apps (p. ej. Machete IA)
+     llevan su propio ftpsrv interno y dependen de él. */
 
   /* Mismo AuthID que ftpsrv para poder acceder a todo el almacenamiento. */
   if(kernel_set_ucred_authid(getpid(), 0x4801000000000013L)) {

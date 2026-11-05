@@ -32,7 +32,7 @@ Write-Host ""
 Write-Host "Ahora, en la página que se abre (http://${PS5}:8090):"
 Write-Host "  1. Inicia sesión en Tailscale (código QR o enlace)."
 Write-Host "  2. Pon una contraseña a la página de estado."
-Write-Host "  3. En Settings > 'TCP ports never exposed' añade: 8080, 9021, 2323, 3232"
+Write-Host "  3. En Settings > 'TCP ports never exposed' añade: 2121, 8080, 9021, 2323, 3232"
 Write-Host "  4. Copia la IP 100.x.y.z de la PS5 y pégala en ps5share > Ajustes."
 Start-Sleep -Seconds 5
 Start-Process "http://${PS5}:8090"

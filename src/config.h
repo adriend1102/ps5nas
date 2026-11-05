@@ -45,7 +45,6 @@ typedef struct settings {
   uint16_t pasv_min;
   uint16_t pasv_max;
   char     pasv_address[64];  /* IP a anunciar en PASV cuando el control llega por loopback (Tailscale) */
-  int      kill_ftpsrv;       /* matar ftpsrv.elf original al arrancar */
   uint16_t sftp_port;
   int      sftp_enabled;
   int      ftp_enabled;       /* FTP sin cifrar: desactivado por defecto */

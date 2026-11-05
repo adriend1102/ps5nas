@@ -1,0 +1,4 @@
+*.elf
+ps5share-linux
+ps5share-data/
+dist/

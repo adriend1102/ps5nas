@@ -1,0 +1,23 @@
+# ps5share - compilación para Linux (pruebas locales)
+#   make -f Makefile.linux && ./ps5share-linux -d ./ps5share-data
+
+VERSION_TAG := $(shell git describe --abbrev=6 --dirty --always --tags 2>/dev/null || echo dev)
+
+CFLAGS ?= -O2 -g
+override CFLAGS += -Wall -Werror -DVERSION_TAG=\"$(VERSION_TAG)\" -Isrc -D_GNU_SOURCE
+
+SOURCE := src/app.c src/config.c src/vfs.c src/ftp.c src/http.c src/io.c
+SOURCE += src/sha256.c src/notify.c src/main-linux.c
+
+all: ps5share-linux
+
+src/webui.h: web/index.html tools/embed.py
+	python3 tools/embed.py $< $@
+
+ps5share-linux: $(SOURCE) src/webui.h $(wildcard src/*.h)
+	$(CC) $(CFLAGS) -o $@ $(SOURCE) -lpthread
+
+clean:
+	rm -f ps5share-linux
+
+.PHONY: all clean

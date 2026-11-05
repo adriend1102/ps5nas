@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PS5 Share</title>
+<style>
+:root{
+  --bg:#f4f5f7;--panel:#ffffff;--ink:#16181d;--muted:#667085;--line:#e3e6ec;
+  --accent:#2156d6;--accent-ink:#ffffff;--danger:#c4321f;--ok:#1f8a4c;--chip:#eef2fb;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#0f1115;--panel:#171a21;--ink:#e8eaf0;--muted:#98a2b3;--line:#262b36;
+  --accent:#5b8cff;--accent-ink:#0b0d12;--danger:#ff6b57;--ok:#4cc38a;--chip:#1e2433;
+  --shadow:none}
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select{font:inherit;color:inherit}
+a{color:var(--accent)}
+.hidden{display:none!important}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);
+  border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.brand{font-weight:700;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
+.brand i{display:inline-block;width:22px;height:22px;border-radius:6px;background:var(--accent);
+  -webkit-mask:linear-gradient(#000 0 0);position:relative}
+nav{display:flex;gap:4px;flex:1}
+nav button{background:none;border:0;padding:8px 12px;border-radius:8px;cursor:pointer;color:var(--muted)}
+nav button.on{background:var(--chip);color:var(--ink);font-weight:600}
+.who{color:var(--muted);font-size:14px;white-space:nowrap}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.pad{padding:18px}
+.btn{text-decoration:none;display:inline-block;border:1px solid var(--line);background:var(--panel);padding:7px 12px;border-radius:8px;
+  cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.danger{color:var(--danger)}
+.btn.sm{padding:4px 8px;font-size:13px}
+.btn:disabled{opacity:.5;cursor:default}
+input[type=text],input[type=password],input[type=number],select{
+  border:1px solid var(--line);background:var(--bg);padding:8px 10px;border-radius:8px;width:100%}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+label.f{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grow{flex:1}
+.err{color:var(--danger);font-size:14px;min-height:20px;margin-top:8px}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);
+  color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;z-index:50;max-width:90vw}
+/* login */
+.center{min-height:100vh;display:grid;place-items:center;padding:16px}
+.login{width:100%;max-width:360px}
+.login h1{font-size:20px;margin:0 0 4px}
+.login p{color:var(--muted);margin:0 0 8px;font-size:14px}
+/* archivos */
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;flex:1;min-width:200px;font-size:14px}
+.crumbs button{background:none;border:0;padding:4px 6px;border-radius:6px;cursor:pointer;color:var(--accent)}
+.crumbs button:last-child{color:var(--ink);font-weight:600;cursor:default}
+.crumbs span{color:var(--muted)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);font-size:14px}
+th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+tr:last-child td{border-bottom:0}
+td.name{cursor:pointer;word-break:break-all}
+td.name:hover{color:var(--accent)}
+td.num{text-align:right;color:var(--muted);white-space:nowrap}
+td.act{text-align:right;white-space:nowrap}
+.ico{display:inline-block;width:18px;margin-right:6px;text-align:center}
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;background:var(--chip);
+  color:var(--muted);margin-left:6px;vertical-align:1px}
+.tag.rw{color:var(--ok)}
+.empty{padding:40px;text-align:center;color:var(--muted)}
+.drop{outline:2px dashed var(--accent);outline-offset:-6px}
+.up{padding:10px 14px;border-top:1px solid var(--line);font-size:13px}
+.bar{height:6px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--accent);width:0}
+/* usuarios */
+.grid{display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start}
+@media (max-width:820px){.grid{grid-template-columns:1fr}.hide-sm{display:none}}
+.ulist button{display:flex;width:100%;text-align:left;gap:8px;align-items:center;background:none;
+  border:0;border-bottom:1px solid var(--line);padding:12px 14px;cursor:pointer}
+.ulist button:last-child{border-bottom:0}
+.ulist button.on{background:var(--chip)}
+.ulist small{color:var(--muted)}
+.mrow{display:grid;grid-template-columns:1fr 2fr auto auto auto;gap:6px;align-items:center;margin-bottom:6px}
+@media (max-width:620px){.mrow{grid-template-columns:1fr 1fr;}}
+.check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px}
+.hint{font-size:13px;color:var(--muted);margin-top:6px}
+h2{font-size:16px;margin:0 0 4px}
+/* modal */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:grid;place-items:center;z-index:40;padding:16px}
+.modal .card{width:100%;max-width:560px;max-height:85vh;display:flex;flex-direction:column}
+.dirs{overflow:auto;flex:1;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.dirs button{display:block;width:100%;text-align:left;background:none;border:0;
+  border-bottom:1px solid var(--line);padding:9px 14px;cursor:pointer}
+.dirs button:hover{background:var(--chip)}
+code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;word-break:break-all}
+</style>
+</head>
+<body>
+
+<!-- Configuración inicial -->
+<div id="v-setup" class="center hidden">
+  <form class="card pad login" id="f-setup">
+    <h1>Bienvenido a PS5 Share</h1>
+    <p>Crea la cuenta de administrador. Con ella podrás dar de alta usuarios y decidir a qué carpetas accede cada uno.</p>
+    <label class="f">Usuario</label><input type="text" name="user" autocomplete="username" required>
+    <label class="f">Contraseña (mín. 6)</label><input type="password" name="pass" autocomplete="new-password" required>
+    <label class="f">Repite la contraseña</label><input type="password" name="pass2" autocomplete="new-password" required>
+    <div class="err" id="e-setup"></div>
+    <button class="btn primary" style="width:100%;margin-top:6px">Crear administrador</button>
+  </form>
+</div>
+
+<!-- Login -->
+<div id="v-login" class="center hidden">
+  <form class="card pad login" id="f-login">
+    <h1>PS5 Share</h1>
+    <p>Inicia sesión para acceder a tus carpetas.</p>
+    <label class="f">Usuario</label><input type="text" name="user" autocomplete="username" required>
+    <label class="f">Contraseña</label><input type="password" name="pass" autocomplete="current-password" required>
+    <div class="err" id="e-login"></div>
+    <button class="btn primary" style="width:100%;margin-top:6px">Entrar</button>
+  </form>
+</div>
+
+<!-- App -->
+<div id="v-app" class="hidden">
+  <header>
+    <div class="brand"><i></i><span class="hide-sm">PS5 Share</span></div>
+    <nav>
+      <button data-tab="files" class="on">Archivos</button>
+      <button data-tab="users" class="adm">Usuarios</button>
+      <button data-tab="settings" class="adm">Ajustes</button>
+    </nav>
+    <span class="who" id="who"></span>
+    <button class="btn sm" id="b-logout">Salir</button>
+  </header>
+
+  <main>
+    <!-- Archivos -->
+    <section id="t-files" class="card">
+      <div class="toolbar">
+        <div class="crumbs" id="crumbs"></div>
+        <button class="btn sm" id="b-mkdir">Nueva carpeta</button>
+        <button class="btn sm primary" id="b-upload">Subir archivos</button>
+        <input type="file" id="i-upload" multiple class="hidden">
+      </div>
+      <div id="flist"></div>
+      <div class="up hidden" id="upbox"><div id="uptext"></div><div class="bar"><i id="upbar"></i></div></div>
+    </section>
+
+    <!-- Usuarios -->
+    <section id="t-users" class="hidden">
+      <div class="grid">
+        <div class="card">
+          <div class="toolbar"><strong class="grow">Usuarios</strong>
+            <button class="btn sm primary" id="b-newuser">Nuevo</button></div>
+          <div class="ulist" id="ulist"></div>
+        </div>
+        <form class="card pad" id="f-user">
+          <h2 id="u-title">Nuevo usuario</h2>
+          <div class="hint">Cada usuario solo ve las carpetas que le asignes aquí, con el nombre que elijas.</div>
+          <label class="f">Nombre de usuario</label>
+          <input type="text" name="name" required pattern="[A-Za-z0-9_.\-]{1,32}" title="Letras, números, punto, guion y guion bajo">
+          <label class="f" id="u-passlabel">Contraseña</label>
+          <input type="password" name="password" autocomplete="new-password">
+          <label class="check"><input type="checkbox" name="enabled" checked> Cuenta activa</label>
+          <label class="check"><input type="checkbox" name="admin"> Administrador (puede gestionar usuarios y ajustes)</label>
+
+          <label class="f" style="margin-top:18px">Carpetas a las que tiene acceso</label>
+          <div id="mounts"></div>
+          <button type="button" class="btn sm" id="b-addmount">+ Añadir carpeta</button>
+          <div class="hint">«Nombre» es cómo la verá el usuario. «Ruta» es la carpeta real en la PS5 (p. ej. <code>/mnt/ext0/Peliculas</code>).</div>
+
+          <div class="err" id="e-user"></div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn primary">Guardar</button>
+            <span class="grow"></span>
+            <button type="button" class="btn danger" id="b-deluser">Borrar usuario</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Ajustes -->
+    <section id="t-settings" class="hidden">
+      <form class="card pad" id="f-settings" style="max-width:640px">
+        <h2>Ajustes del servidor</h2>
+        <div class="row">
+          <div class="grow"><label class="f">Puerto FTP</label><input type="number" name="ftp_port" min="1" max="65535"></div>
+          <div class="grow"><label class="f">Puerto web</label><input type="number" name="http_port" min="1" max="65535"></div>
+        </div>
+        <div class="hint">Los cambios de puerto se aplican al reiniciar el payload.</div>
+        <div class="row">
+          <div class="grow"><label class="f">Puertos pasivos FTP: desde</label><input type="number" name="pasv_min" min="0" max="65535"></div>
+          <div class="grow"><label class="f">hasta</label><input type="number" name="pasv_max" min="0" max="65535"></div>
+        </div>
+        <label class="f">IP de Tailscale de la PS5 (para FTP pasivo remoto)</label>
+        <input type="text" name="pasv_address" placeholder="100.x.y.z">
+        <div class="hint">Cópiala de la página de estado de Tailscale en la PS5 (puerto 8090) o de la consola de administración de Tailscale.
+          Solo se usa cuando la conexión llega a través de Tailscale; en casa se sigue usando la IP local.</div>
+        <label class="check"><input type="checkbox" name="kill_ftpsrv"> Detener el ftpsrv original al arrancar (recomendado: no tiene contraseña)</label>
+        <div class="err" id="e-settings"></div>
+        <button class="btn primary">Guardar ajustes</button>
+
+        <h2 style="margin-top:26px">Direcciones de la consola</h2>
+        <div id="ifaces" class="hint"></div>
+      </form>
+    </section>
+  </main>
+</div>
+
+<!-- Selector de carpetas -->
+<div class="modal hidden" id="picker">
+  <div class="card">
+    <div class="pad" style="padding-bottom:10px">
+      <h2>Elegir carpeta de la PS5</h2>
+      <div class="row" style="margin-top:8px">
+        <button class="btn sm" id="p-up">⬆ Subir</button>
+        <code class="grow" id="p-path">/</code>
+      </div>
+      <div class="row" style="margin-top:8px" id="p-quick"></div>
+    </div>
+    <div class="dirs" id="p-dirs"></div>
+    <div class="pad row">
+      <span class="grow hint" style="margin:0">Entra en la carpeta y pulsa «Elegir esta».</span>
+      <button class="btn" id="p-cancel">Cancelar</button>
+      <button class="btn primary" id="p-ok">Elegir esta</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (s, el=document) => el.querySelector(s);
+const $$ = (s, el=document) => [...el.querySelectorAll(s)];
+let ME = null, CWD = "/", USERS = [], EDIT = null;
+
+function el(tag, attrs={}, ...kids){
+  const e = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs)){
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k != null) e.append(k instanceof Node ? k : document.createTextNode(k));
+  return e;
+}
+function toast(msg){
+  const t = el("div", {class:"toast"}, msg);
+  document.body.append(t); setTimeout(()=>t.remove(), 3000);
+}
+function fmtSize(n){
+  if (n < 1024) return n + " B";
+  const u = ["KB","MB","GB","TB"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length-1);
+  return n.toFixed(n < 10 ? 1 : 0) + " " + u[i];
+}
+function fmtDate(t){
+  if (!t) return "";
+  const d = new Date(t*1000);
+  return d.toLocaleDateString() + " " + d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+}
+function joinPath(a, b){ return (a === "/" ? "" : a) + "/" + b; }
+function form(obj){ return new URLSearchParams(obj).toString(); }
+
+async function api(method, url, body){
+  const opt = {method, headers:{"X-PS5Share":"1"}, credentials:"same-origin"};
+  if (body !== undefined){ opt.body = body; opt.headers["Content-Type"] = "application/x-www-form-urlencoded"; }
+  const r = await fetch(url, opt);
+  let j = {};
+  try { j = await r.json(); } catch(e) {}
+  if (r.status === 401 && !url.startsWith("/api/login")) { showLogin(); throw new Error(j.error || "Sesión caducada"); }
+  if (!r.ok) throw new Error(j.error || ("Error " + r.status));
+  return j;
+}
+
+/* ---------- Vistas ---------- */
+function show(id){ for (const v of ["v-setup","v-login","v-app"]) $("#"+v).classList.toggle("hidden", v !== id); }
+function showLogin(){ show("v-login"); setTimeout(()=>$("#f-login [name=user]").focus(), 50); }
+
+async function boot(){
+  try {
+    const st = await api("GET", "/api/status");
+    if (st.setup) { show("v-setup"); return; }
+    ME = await api("GET", "/api/me");
+    startApp();
+  } catch(e) { if (!$("#v-setup").classList.contains("hidden")) return; showLogin(); }
+}
+
+$("#f-setup").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  if (f.pass.value !== f.pass2.value) { $("#e-setup").textContent = "Las contraseñas no coinciden"; return; }
+  try {
+    await api("POST", "/api/setup", form({user:f.user.value, pass:f.pass.value}));
+    ME = await api("GET", "/api/me");
+    startApp(); openTab("users");
+    toast("Administrador creado. Ahora añade usuarios y sus carpetas.");
+  } catch(e) { $("#e-setup").textContent = e.message; }
+});
+
+$("#f-login").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  $("#e-login").textContent = "";
+  try {
+    await api("POST", "/api/login", form({user:f.user.value, pass:f.pass.value}));
+    f.pass.value = "";
+    ME = await api("GET", "/api/me");
+    startApp();
+  } catch(e) { $("#e-login").textContent = e.message; }
+});
+
+$("#b-logout").onclick = async () => { try { await api("POST", "/api/logout"); } catch(e) {} location.reload(); };
+
+function startApp(){
+  show("v-app");
+  $("#who").textContent = ME.user + (ME.admin ? " · admin" : "");
+  $$(".adm").forEach(b => b.classList.toggle("hidden", !ME.admin));
+  openTab("files");
+}
+
+$$("nav button").forEach(b => b.onclick = () => openTab(b.dataset.tab));
+function openTab(t){
+  $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  for (const s of ["files","users","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
+  if (t === "files") loadDir(CWD);
+  if (t === "users") loadUsers();
+  if (t === "settings") loadSettings();
+}
+
+/* ---------- Archivos ---------- */
+let CUR = null;
+async function loadDir(path){
+  try {
+    CUR = await api("GET", "/api/fs/list?path=" + encodeURIComponent(path));
+    CWD = CUR.path;
+  } catch(e) {
+    toast(e.message);
+    if (path !== "/") return loadDir("/");
+    return;
+  }
+  renderCrumbs(); renderList();
+  $("#b-mkdir").disabled = $("#b-upload").disabled = !CUR.rw;
+}
+
+function renderCrumbs(){
+  const c = $("#crumbs"); c.textContent = "";
+  c.append(el("button", {onclick:()=>loadDir("/")}, "Inicio"));
+  let acc = "";
+  for (const p of CWD.split("/").filter(Boolean)){
+    acc += "/" + p; const target = acc;
+    c.append(el("span", {}, "/"), el("button", {onclick:()=>loadDir(target)}, p));
+  }
+}
+
+function renderList(){
+  const box = $("#flist"); box.textContent = "";
+  const items = [...CUR.entries].sort((a,b)=> (b.dir - a.dir) || a.name.localeCompare(b.name, undefined, {numeric:true}));
+  if (!items.length){
+    box.append(el("div", {class:"empty"}, CUR.root
+      ? "No tienes carpetas asignadas. Pide al administrador que te dé acceso."
+      : (CUR.rw ? "Carpeta vacía. Arrastra archivos aquí para subirlos." : "Carpeta vacía.")));
+    return;
+  }
+  const tb = el("tbody");
+  for (const it of items){
+    const p = joinPath(CWD, it.name);
+    const acts = el("td", {class:"act"});
+    if (!it.dir) acts.append(el("a", {class:"btn sm", href:"/api/fs/get?dl=1&path="+encodeURIComponent(p)}, "Descargar"), " ");
+    if (CUR.rw){
+      acts.append(el("button", {class:"btn sm", onclick:()=>renameItem(it)}, "Renombrar"), " ",
+                  el("button", {class:"btn sm danger", onclick:()=>deleteItem(it)}, "Borrar"));
+    }
+    const name = el("td", {class:"name", onclick:()=> it.dir ? loadDir(p) : window.open("/api/fs/get?path="+encodeURIComponent(p), "_blank")},
+      el("span", {class:"ico"}, it.dir ? "📁" : "📄"), it.name,
+      CUR.root ? el("span", {class:"tag"+(it.rw?" rw":"")}, it.rw ? "lectura y escritura" : "solo lectura") : null,
+      it.missing ? el("span", {class:"tag", style:"color:var(--danger)"}, "no disponible") : null);
+    tb.append(el("tr", {}, name,
+      el("td", {class:"num hide-sm"}, it.dir ? "" : fmtSize(it.size)),
+      el("td", {class:"num hide-sm"}, fmtDate(it.mtime)), acts));
+  }
+  box.append(el("table", {}, el("thead", {}, el("tr", {}, el("th",{},"Nombre"),
+    el("th",{class:"hide-sm",style:"text-align:right"},"Tamaño"), el("th",{class:"hide-sm",style:"text-align:right"},"Modificado"), el("th"))), tb));
+}
+
+async function renameItem(it){
+  const n = prompt("Nuevo nombre:", it.name);
+  if (!n || n === it.name) return;
+  if (n.includes("/")) return toast("El nombre no puede contener «/»");
+  try { await api("POST", "/api/fs/rename?" + form({from:joinPath(CWD,it.name), to:joinPath(CWD,n)})); loadDir(CWD); }
+  catch(e) { toast(e.message); }
+}
+async function deleteItem(it){
+  if (!confirm((it.dir ? "¿Borrar la carpeta «" + it.name + "» y TODO su contenido?" : "¿Borrar «" + it.name + "»?"))) return;
+  try { await api("POST", "/api/fs/delete?" + form({path:joinPath(CWD,it.name)})); loadDir(CWD); }
+  catch(e) { toast(e.message); }
+}
+$("#b-mkdir").onclick = async () => {
+  const n = prompt("Nombre de la carpeta:");
+  if (!n) return;
+  if (n.includes("/")) return toast("El nombre no puede contener «/»");
+  try { await api("POST", "/api/fs/mkdir?" + form({path:joinPath(CWD,n)})); loadDir(CWD); }
+  catch(e) { toast(e.message); }
+};
+
+$("#b-upload").onclick = () => $("#i-upload").click();
+$("#i-upload").onchange = ev => { uploadFiles([...ev.target.files]); ev.target.value = ""; };
+const tf = $("#t-files");
+tf.addEventListener("dragover", ev => { if (CUR && CUR.rw){ ev.preventDefault(); tf.classList.add("drop"); } });
+tf.addEventListener("dragleave", () => tf.classList.remove("drop"));
+tf.addEventListener("drop", ev => { ev.preventDefault(); tf.classList.remove("drop"); if (CUR && CUR.rw) uploadFiles([...ev.dataTransfer.files]); });
+
+function putFile(path, file, onprog){
+  return new Promise((res, rej) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", "/api/fs/put?path=" + encodeURIComponent(path));
+    x.setRequestHeader("X-PS5Share", "1");
+    x.upload.onprogress = e => e.lengthComputable && onprog(e.loaded);
+    x.onload = () => { if (x.status === 200) res(); else { let m = "Error " + x.status; try { m = JSON.parse(x.responseText).error; } catch(e) {} rej(new Error(m)); } };
+    x.onerror = () => rej(new Error("Conexión interrumpida"));
+    x.send(file);
+  });
+}
+async function uploadFiles(files){
+  if (!files.length) return;
+  const dir = CWD, total = files.reduce((s,f)=>s+f.size, 0);
+  let done = 0, fails = 0;
+  $("#upbox").classList.remove("hidden");
+  for (let i = 0; i < files.length; i++){
+    const f = files[i];
+    $("#uptext").textContent = `Subiendo ${i+1}/${files.length}: ${f.name}`;
+    try {
+      await putFile(joinPath(dir, f.name), f, l => { $("#upbar").style.width = (total ? (done+l)/total*100 : 100) + "%"; });
+    } catch(e) { fails++; toast(f.name + ": " + e.message); }
+    done += f.size;
+  }
+  $("#upbox").classList.add("hidden"); $("#upbar").style.width = "0";
+  toast(fails ? `${files.length-fails} subidos, ${fails} con error` : `${files.length} archivo(s) subidos`);
+  if (CWD === dir) loadDir(dir);
+}
+
+/* ---------- Usuarios ---------- */
+async function loadUsers(select){
+  try { USERS = (await api("GET", "/api/admin/users")).users; } catch(e) { return toast(e.message); }
+  const l = $("#ulist"); l.textContent = "";
+  for (const u of USERS){
+    l.append(el("button", {class: EDIT && EDIT.name === u.name ? "on" : "", onclick:()=>editUser(u)},
+      el("span", {class:"grow"}, u.name, u.admin ? el("span",{class:"tag"},"admin") : null,
+        !u.enabled ? el("span",{class:"tag",style:"color:var(--danger)"},"desactivado") : null),
+      el("small", {}, u.mounts.length + " carpeta(s)")));
+  }
+  const pick = select ? USERS.find(u => u.name === select) : (EDIT && USERS.find(u => u.name === EDIT.name));
+  editUser(pick || null);
+}
+
+function editUser(u){
+  EDIT = u;
+  $$("#ulist button").forEach(b => b.classList.toggle("on", !!u && b.firstChild.firstChild.textContent === u.name));
+  const f = $("#f-user");
+  $("#u-title").textContent = u ? "Editar " + u.name : "Nuevo usuario";
+  f.name.value = u ? u.name : ""; f.name.readOnly = !!u;
+  f.password.value = "";
+  f.password.placeholder = u ? "Déjala vacía para no cambiarla" : "Mínimo 6 caracteres";
+  f.enabled.checked = u ? u.enabled : true;
+  f.admin.checked = u ? u.admin : false;
+  $("#b-deluser").classList.toggle("hidden", !u);
+  $("#e-user").textContent = "";
+  const m = $("#mounts"); m.textContent = "";
+  (u ? u.mounts : []).forEach(addMountRow);
+  if (!u) addMountRow();
+}
+
+function addMountRow(mt){
+  const name = el("input", {type:"text", placeholder:"Nombre (p. ej. Películas)", value: mt ? mt.name : ""});
+  const path = el("input", {type:"text", placeholder:"/mnt/ext0/...", value: mt ? mt.path : ""});
+  const rw = el("select", {}, el("option",{value:"ro"},"Solo lectura"), el("option",{value:"rw"},"Lectura y escritura"));
+  rw.value = mt && mt.rw ? "rw" : "ro";
+  const row = el("div", {class:"mrow"}, name, path,
+    el("button", {type:"button", class:"btn sm", onclick:()=>openPicker(path.value || "/mnt", p => {
+      path.value = p;
+      if (!name.value) name.value = p.split("/").filter(Boolean).pop() || "PS5";
+    })}, "Elegir…"), rw,
+    el("button", {type:"button", class:"btn sm danger", title:"Quitar", onclick:()=>row.remove()}, "✕"));
+  $("#mounts").append(row);
+}
+$("#b-addmount").onclick = () => addMountRow();
+$("#b-newuser").onclick = () => { editUser(null); $("#f-user [name=name]").focus(); };
+
+$("#f-user").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  const lines = [];
+  for (const r of $$("#mounts .mrow")){
+    const [n, p] = $$("input", r).map(i => i.value.trim());
+    const rw = $("select", r).value;
+    if (!n && !p) continue;
+    if (!n || !p) { $("#e-user").textContent = "Cada carpeta necesita nombre y ruta"; return; }
+    if (n.includes("|") || p.includes("|")) { $("#e-user").textContent = "No se permite el carácter «|»"; return; }
+    lines.push(rw + "|" + n + "|" + p);
+  }
+  try {
+    await api("POST", "/api/admin/user", form({name:f.name.value, password:f.password.value,
+      admin: f.admin.checked ? "1" : "0", enabled: f.enabled.checked ? "1" : "0", mounts: lines.join("\n")}));
+    toast("Usuario guardado");
+    loadUsers(f.name.value);
+  } catch(e) { $("#e-user").textContent = e.message; }
+});
+
+$("#b-deluser").onclick = async () => {
+  if (!EDIT || !confirm("¿Borrar el usuario «" + EDIT.name + "»? Sus archivos no se borran.")) return;
+  try { await api("POST", "/api/admin/user/delete", form({name:EDIT.name})); EDIT = null; toast("Usuario borrado"); loadUsers(); }
+  catch(e) { $("#e-user").textContent = e.message; }
+};
+
+/* ---------- Selector de carpetas ---------- */
+let PICK = {path:"/", cb:null};
+async function openPicker(start, cb){
+  PICK.cb = cb;
+  $("#picker").classList.remove("hidden");
+  const q = $("#p-quick"); q.textContent = "";
+  for (const p of ["/mnt/ext0","/mnt/ext1","/mnt/usb0","/mnt/usb1","/data","/user"])
+    q.append(el("button", {type:"button", class:"btn sm", onclick:()=>browse(p)}, p));
+  if (!(await browse(start))) await browse("/mnt");
+}
+async function browse(path){
+  try {
+    const r = await api("GET", "/api/admin/browse?path=" + encodeURIComponent(path));
+    PICK.path = r.path; $("#p-path").textContent = r.path;
+    const d = $("#p-dirs"); d.textContent = "";
+    if (!r.dirs.length) d.append(el("div", {class:"empty"}, "Sin subcarpetas"));
+    for (const n of r.dirs.sort((a,b)=>a.localeCompare(b)))
+      d.append(el("button", {type:"button", onclick:()=>browse(joinPath(r.path, n))}, "📁 " + n));
+    return true;
+  } catch(e) { toast(path + ": " + e.message); return false; }
+}
+$("#p-up").onclick = () => browse(PICK.path.replace(/\/[^/]*$/, "") || "/");
+$("#p-cancel").onclick = () => $("#picker").classList.add("hidden");
+$("#p-ok").onclick = () => { $("#picker").classList.add("hidden"); PICK.cb && PICK.cb(PICK.path); };
+
+/* ---------- Ajustes ---------- */
+async function loadSettings(){
+  let s;
+  try { s = await api("GET", "/api/admin/settings"); } catch(e) { return toast(e.message); }
+  const f = $("#f-settings");
+  for (const k of ["ftp_port","http_port","pasv_min","pasv_max","pasv_address"]) f[k].value = s[k];
+  f.kill_ftpsrv.checked = s.kill_ftpsrv;
+  const box = $("#ifaces"); box.textContent = "";
+  for (const i of s.interfaces) box.append(el("div", {}, el("code", {}, i.ip), " (" + i.name + ")"));
+  box.append(el("div", {style:"margin-top:8px"}, "En casa: ftp://", el("code",{}, location.hostname + ":" + s.ftp_port),
+    " · web: ", el("code",{}, location.host)));
+}
+$("#f-settings").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  $("#e-settings").textContent = "";
+  try {
+    await api("POST", "/api/admin/settings", form({ftp_port:f.ftp_port.value, http_port:f.http_port.value,
+      pasv_min:f.pasv_min.value, pasv_max:f.pasv_max.value, pasv_address:f.pasv_address.value.trim(),
+      kill_ftpsrv: f.kill_ftpsrv.checked ? "1" : "0"}));
+    toast("Ajustes guardados");
+  } catch(e) { $("#e-settings").textContent = e.message; }
+});
+
+boot();
+</script>
+</body>
+</html>

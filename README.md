@@ -61,7 +61,19 @@ Abre `http://192.168.100.208:8000` en el PC o el móvil:
 3. Si tú también quieres ver archivos, añade carpetas a tu propio usuario.
 
 Los cambios se aplican al momento: si desactivas o borras un usuario, sus
-sesiones FTP y web se cortan.
+sesiones SFTP, FTP y web se cortan.
+
+**Contraseñas propias.** En cada usuario puedes marcar:
+
+* *Puede cambiar su propia contraseña*: le aparece el botón **Contraseña** en
+  la web (también desde el navegador del móvil).
+* *Obligarle a cambiarla al iniciar sesión*: la primera vez que entre en la web
+  tendrá que poner una contraseña nueva antes de hacer nada más. Hasta que lo
+  haga, no puede entrar por SFTP ni FTP (esos protocolos no tienen forma de
+  pedir el cambio). Úsalo al dar de alta a alguien con una contraseña temporal.
+
+Los usuarios creados con versiones anteriores tienen las dos opciones
+desactivadas; actívalas en su ficha si quieres.
 
 Rutas habituales del almacenamiento en la PS5: `/mnt/ext0` (SSD M.2 o
 almacenamiento ampliado), `/mnt/usb0`, `/mnt/usb1` (discos USB), `/data`.
@@ -189,7 +201,7 @@ make -f Makefile.ps5 test PS5_HOST=192.168.100.208   # compila y envía
 Para probar en Linux sin consola:
 
 ```sh
-./test/run_tests.sh             # compila la versión Linux y pasa ~85 pruebas
+./test/run_tests.sh             # compila la versión Linux y pasa ~100 pruebas
 ./ps5share-linux -d ./datos     # web en :8000, SFTP en :2222
 ```
 
@@ -209,7 +221,8 @@ Para probar en Linux sin consola:
 ### Formato de `users.conf`
 
 Separado por tabuladores. Mejor editarlo desde la web. En las líneas `user`
-los dos últimos campos son *administrador* y *activa* (1 = sí).
+tras el hash van *administrador*, *activa*, *puede cambiar su contraseña* y
+*debe cambiarla* (1 = sí).
 
 ```
 set	ftp_port	2121
@@ -220,7 +233,7 @@ set	pasv_address	100.101.102.103
 set	sftp_port	2222
 set	sftp_enabled	1
 set	ftp_enabled	0
-user	ana	<sal>	<hash>	1	1
+user	ana	<sal>	<hash>	1	1	1	0
 mount	ana	rw	Fotos	/mnt/ext0/Fotos
 mount	ana	ro	Películas	/mnt/usb0/Peliculas
 ```

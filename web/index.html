@@ -127,6 +127,20 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
   </form>
 </div>
 
+<!-- Cambio de contraseña -->
+<div id="v-chpass" class="center hidden">
+  <form class="card pad login" id="f-chpass">
+    <h1>Cambiar contraseña</h1>
+    <p id="chpass-msg">Elige una contraseña nueva que solo sepas tú.</p>
+    <label class="f">Contraseña actual</label><input type="password" name="old" autocomplete="current-password" required>
+    <label class="f">Nueva contraseña (mín. 6)</label><input type="password" name="new" autocomplete="new-password" required minlength="6">
+    <label class="f">Repite la nueva contraseña</label><input type="password" name="new2" autocomplete="new-password" required>
+    <div class="err" id="e-chpass"></div>
+    <button class="btn primary" style="width:100%;margin-top:6px">Guardar contraseña</button>
+    <button type="button" class="btn" id="b-chpass-cancel" style="width:100%;margin-top:8px">Cancelar</button>
+  </form>
+</div>
+
 <!-- App -->
 <div id="v-app" class="hidden">
   <header>
@@ -137,6 +151,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
       <button data-tab="settings" class="adm">Ajustes</button>
     </nav>
     <span class="who" id="who"></span>
+    <button class="btn sm hidden" id="b-chpass">Contraseña</button>
     <button class="btn sm" id="b-logout">Salir</button>
   </header>
 
@@ -170,6 +185,8 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
           <input type="password" name="password" autocomplete="new-password">
           <label class="check"><input type="checkbox" name="enabled" checked> Cuenta activa</label>
           <label class="check"><input type="checkbox" name="admin"> Administrador (puede gestionar usuarios y ajustes)</label>
+          <label class="check"><input type="checkbox" name="can_chpass" checked> Puede cambiar su propia contraseña desde la web</label>
+          <label class="check"><input type="checkbox" name="must_chpass"> Obligarle a cambiarla al iniciar sesión en la web (hasta entonces no entra por SFTP)</label>
 
           <label class="f" style="margin-top:18px">Carpetas a las que tiene acceso</label>
           <div id="mounts"></div>
@@ -256,6 +273,7 @@ function el(tag, attrs={}, ...kids){
   return e;
 }
 function toast(msg){
+  $$(".toast").forEach(x => x.remove());
   const t = el("div", {class:"toast"}, msg);
   document.body.append(t); setTimeout(()=>t.remove(), 3000);
 }
@@ -285,7 +303,7 @@ async function api(method, url, body){
 }
 
 /* ---------- Vistas ---------- */
-function show(id){ for (const v of ["v-setup","v-login","v-app"]) $("#"+v).classList.toggle("hidden", v !== id); }
+function show(id){ for (const v of ["v-setup","v-login","v-app","v-chpass"]) $("#"+v).classList.toggle("hidden", v !== id); }
 function showLogin(){ show("v-login"); setTimeout(()=>$("#f-login [name=user]").focus(), 50); }
 
 async function boot(){
@@ -323,8 +341,32 @@ $("#f-login").addEventListener("submit", async ev => {
 
 $("#b-logout").onclick = async () => { try { await api("POST", "/api/logout"); } catch(e) {} location.reload(); };
 
+function showChpass(forced){
+  const f = $("#f-chpass"); f.reset(); $("#e-chpass").textContent = "";
+  $("#chpass-msg").textContent = forced
+    ? "Antes de continuar tienes que cambiar la contraseña que te dio el administrador. Hasta que lo hagas no podrás entrar por SFTP."
+    : "Elige una contraseña nueva que solo sepas tú.";
+  $("#b-chpass-cancel").classList.toggle("hidden", forced);
+  show("v-chpass"); setTimeout(()=>f.old.focus(), 50);
+}
+$("#b-chpass").onclick = () => showChpass(false);
+$("#b-chpass-cancel").onclick = () => show("v-app");
+$("#f-chpass").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  if (f.new.value !== f.new2.value) { $("#e-chpass").textContent = "Las contraseñas nuevas no coinciden"; return; }
+  try {
+    await api("POST", "/api/me/password", form({old:f.old.value, new:f.new.value}));
+    ME = await api("GET", "/api/me");
+    toast("Contraseña cambiada. Úsala también en tus apps SFTP.");
+    startApp();
+  } catch(e) { $("#e-chpass").textContent = e.message; }
+});
+
 function startApp(){
+  if (ME.must_chpass) { showChpass(true); return; }
   show("v-app");
+  $("#b-chpass").classList.toggle("hidden", !ME.can_chpass);
   $("#who").textContent = ME.user + (ME.admin ? " · admin" : "");
   $$(".adm").forEach(b => b.classList.toggle("hidden", !ME.admin));
   openTab("files");
@@ -457,6 +499,7 @@ async function loadUsers(select){
   for (const u of USERS){
     l.append(el("button", {class: EDIT && EDIT.name === u.name ? "on" : "", onclick:()=>editUser(u)},
       el("span", {class:"grow"}, u.name, u.admin ? el("span",{class:"tag"},"admin") : null,
+        u.must_chpass ? el("span",{class:"tag"},"cambio pendiente") : null,
         !u.enabled ? el("span",{class:"tag",style:"color:var(--danger)"},"desactivado") : null),
       el("small", {}, u.mounts.length + " carpeta(s)")));
   }
@@ -474,6 +517,8 @@ function editUser(u){
   f.password.placeholder = u ? "Déjala vacía para no cambiarla" : "Mínimo 6 caracteres";
   f.enabled.checked = u ? u.enabled : true;
   f.admin.checked = u ? u.admin : false;
+  f.can_chpass.checked = u ? u.can_chpass : true;
+  f.must_chpass.checked = u ? u.must_chpass : false;
   $("#b-deluser").classList.toggle("hidden", !u);
   $("#e-user").textContent = "";
   const m = $("#mounts"); m.textContent = "";
@@ -511,7 +556,9 @@ $("#f-user").addEventListener("submit", async ev => {
   }
   try {
     await api("POST", "/api/admin/user", form({name:f.name.value, password:f.password.value,
-      admin: f.admin.checked ? "1" : "0", enabled: f.enabled.checked ? "1" : "0", mounts: lines.join("\n")}));
+      admin: f.admin.checked ? "1" : "0", enabled: f.enabled.checked ? "1" : "0",
+      can_chpass: f.can_chpass.checked ? "1" : "0", must_chpass: f.must_chpass.checked ? "1" : "0",
+      mounts: lines.join("\n")}));
     toast("Usuario guardado");
     loadUsers(f.name.value);
   } catch(e) { $("#e-user").textContent = e.message; }

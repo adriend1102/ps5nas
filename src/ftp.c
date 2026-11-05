@@ -318,6 +318,10 @@ cmd_PASS(ftp_env_t *env, const char *arg) {
     }
     return reply(env, "530 Usuario o contraseña incorrectos\r\n");
   }
+  if(env->user.must_chpass) {
+    LOG_PRINTF("ftp: '%s' debe cambiar su contraseña en la web\n", env->user.name);
+    return reply(env, "530 Debes cambiar tu contraseña en la web antes de usar FTP\r\n");
+  }
   env->logged_in = 1;
   env->fails = 0;
   strcpy(env->cwd, "/");

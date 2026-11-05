@@ -294,6 +294,53 @@ try:
 except paramiko.ChannelException:
     check(True, "SFTP: reenvío de puertos denegado")
 
+print("== Cambio de contraseña por el propio usuario")
+s, j, _ = admin.req("POST", "/api/admin/user", {"name": "dani", "password": "inicial1", "admin": "0",
+                                                "enabled": "1", "can_chpass": "1", "must_chpass": "1",
+                                                "mounts": f"rw|Buzon|{BASE}/share/inbox"})
+check(s == 200, "alta de dani con cambio obligatorio")
+try:
+    sftp_connect("dani", "inicial1")
+    check(False, "SFTP bloqueado hasta cambiar la contraseña")
+except paramiko.AuthenticationException:
+    check(True, "SFTP bloqueado hasta cambiar la contraseña")
+dani = Web()
+s, j, _ = dani.req("POST", "/api/login", {"user": "dani", "pass": "inicial1"})
+check(s == 200, "dani entra en la web con la inicial")
+s, j, _ = dani.req("GET", "/api/me")
+check(s == 200 and j["must_chpass"] is True, "la web indica cambio pendiente")
+s, j, _ = dani.req("GET", "/api/fs/list" + q(path="/"))
+check(s == 403, "sin cambiarla no puede ver archivos")
+s, j, _ = dani.req("POST", "/api/me/password", {"old": "malamala", "new": "nueva123"})
+check(s == 400, "contraseña actual incorrecta rechazada")
+s, j, _ = dani.req("POST", "/api/me/password", {"old": "inicial1", "new": "inicial1"})
+check(s == 400, "no puede repetir la misma")
+s, j, _ = dani.req("POST", "/api/me/password", {"old": "inicial1", "new": "nueva123"}, csrf=False)
+check(s == 403, "cambio sin cabecera CSRF rechazado")
+s, j, _ = dani.req("POST", "/api/me/password", {"old": "inicial1", "new": "nueva123"})
+check(s == 200, "cambio de contraseña correcto")
+s, j, _ = dani.req("GET", "/api/fs/list" + q(path="/"))
+check(s == 200, "tras cambiarla ya ve sus carpetas")
+t2, sf2 = sftp_connect("dani", "nueva123")
+check(sf2.listdir("/") == ["Buzon"], "SFTP funciona con la nueva contraseña")
+t2.close()
+try:
+    sftp_connect("dani", "inicial1")
+    check(False, "la contraseña antigua ya no vale")
+except paramiko.AuthenticationException:
+    check(True, "la contraseña antigua ya no vale")
+s, j, _ = admin.req("GET", "/api/admin/users")
+d = [u for u in j["users"] if u["name"] == "dani"][0]
+check(d["must_chpass"] is False and d["can_chpass"] is True, "el admin ve el cambio completado")
+s, j, _ = admin.req("POST", "/api/admin/user", {"name": "dani", "password": "", "admin": "0",
+                                                "enabled": "1", "can_chpass": "0", "must_chpass": "0",
+                                                "mounts": f"rw|Buzon|{BASE}/share/inbox"})
+s, j, _ = dani.req("POST", "/api/me/password", {"old": "nueva123", "new": "otra1234"})
+check(s == 400, "si el admin no lo permite, no puede cambiarla")
+t2, sf2 = sftp_connect("dani", "nueva123")
+t2.close()
+check(True, "editar permisos sin contraseña mantiene la actual")
+
 print("== Revocación en caliente")
 s, j, _ = admin.req("POST", "/api/admin/user", {"name": "bob", "password": "", "admin": "0",
                                                 "enabled": "0", "mounts": mounts})

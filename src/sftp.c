@@ -799,7 +799,7 @@ handle_packet(sess_t *s) {
 
   /* Recarga el usuario: los cambios de la web se aplican al momento. */
   user_t fresh;
-  if(cfg_get_user(s->user.name, &fresh) || !fresh.enabled) {
+  if(cfg_get_user(s->user.name, &fresh) || !fresh.enabled || fresh.must_chpass) {
     status(s, id, FX_PERMISSION_DENIED, "Tu cuenta ha sido desactivada");
     return -1;
   }
@@ -886,6 +886,11 @@ cb_auth(byte type, WS_UserAuthData *d, void *ctx) {
     sleep(2);
     if(++s->auth_fails >= SFTP_MAX_AUTH) return WOLFSSH_USERAUTH_REJECTED;
     return WOLFSSH_USERAUTH_INVALID_PASSWORD;
+  }
+  if(s->user.must_chpass) {
+    /* SFTP no tiene forma estándar de pedir el cambio; se hace en la web. */
+    LOG_PRINTF("sftp: '%s' debe cambiar su contraseña en la web\n", s->user.name);
+    return WOLFSSH_USERAUTH_REJECTED;
   }
   s->authed = 1;
   LOG_PRINTF("sftp: '%s' conectado desde %s\n", s->user.name, ip);

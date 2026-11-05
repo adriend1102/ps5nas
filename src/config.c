@@ -304,6 +304,8 @@ load_file(const char *path) {
       snprintf(u->hash, sizeof(u->hash), "%s", fld[3]);
       u->admin = atoi(fld[4]) != 0;
       u->enabled = atoi(fld[5]) != 0;
+      u->can_chpass = n >= 7 && atoi(fld[6]) != 0;
+      u->must_chpass = n >= 8 && atoi(fld[7]) != 0;
     } else if(!strcmp(fld[0], "mount") && n >= 5) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(!u || u->nmounts >= CFG_MAX_MOUNTS) continue;
@@ -344,8 +346,8 @@ cfg_save_locked(void) {
 
   for(int i=0; i<g_nusers; i++) {
     user_t *u = &g_users[i];
-    fprintf(f, "user\t%s\t%s\t%s\t%d\t%d\n", u->name, u->salt, u->hash,
-            u->admin, u->enabled);
+    fprintf(f, "user\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n", u->name, u->salt, u->hash,
+            u->admin, u->enabled, u->can_chpass, u->must_chpass);
     for(int j=0; j<u->nmounts; j++) {
       fprintf(f, "mount\t%s\t%s\t%s\t%s\n", u->name, u->mounts[j].rw ? "rw" : "ro",
               u->mounts[j].name, u->mounts[j].path);
@@ -525,6 +527,48 @@ cfg_upsert_user(const user_t *in, const char *newpass, char *err, size_t errlen)
   r = 0;
 
  out:
+  cfg_unlock();
+  return r;
+}
+
+
+int
+cfg_change_own_password(const char *name, const char *oldpass, const char *newpass,
+                        char *err, size_t errlen) {
+  user_t cur, tmp;
+  int r = -1;
+
+  if(cfg_authenticate(name, oldpass, &cur)) {
+    snprintf(err, errlen, "La contraseña actual no es correcta");
+    return -1;
+  }
+  if(!cur.can_chpass && !cur.must_chpass) {
+    snprintf(err, errlen, "El administrador no te permite cambiar la contraseña");
+    return -1;
+  }
+  if(strlen(newpass) < 6) {
+    snprintf(err, errlen, "La contraseña debe tener al menos 6 caracteres");
+    return -1;
+  }
+  if(!strcmp(oldpass, newpass)) {
+    snprintf(err, errlen, "La nueva contraseña debe ser distinta de la actual");
+    return -1;
+  }
+
+  memset(&tmp, 0, sizeof(tmp));
+  cfg_set_password(&tmp, newpass);   /* PBKDF2 fuera del lock */
+
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u) {
+    snprintf(err, errlen, "No existe el usuario");
+  } else {
+    memcpy(u->salt, tmp.salt, sizeof(u->salt));
+    memcpy(u->hash, tmp.hash, sizeof(u->hash));
+    u->must_chpass = 0;
+    if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+    else r = 0;
+  }
   cfg_unlock();
   return r;
 }

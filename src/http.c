@@ -567,6 +567,7 @@ h_setup(req_t *r) {
   snprintf(u.name, sizeof(u.name), "%s", user);
   u.admin = 1;
   u.enabled = 1;
+  u.can_chpass = 1;
   if(!pass[0]) return send_err(r, 400, "Falta la contraseña");
   if(cfg_upsert_user(&u, pass, err, sizeof(err))) return send_err(r, 400, err);
   LOG_PRINTF("ps5share: administrador inicial '%s' creado\n", user);
@@ -611,7 +612,10 @@ h_me(req_t *r) {
   sb_t b = {0};
   sb_puts(&b, "{\"user\":");
   sb_json_str(&b, r->user.name);
-  sb_printf(&b, ",\"admin\":%s,\"mounts\":[", r->user.admin ? "true" : "false");
+  sb_printf(&b, ",\"admin\":%s,\"can_chpass\":%s,\"must_chpass\":%s,\"mounts\":[",
+            r->user.admin ? "true" : "false",
+            (r->user.can_chpass || r->user.must_chpass) ? "true" : "false",
+            r->user.must_chpass ? "true" : "false");
   for(int i=0; i<r->user.nmounts; i++) {
     if(i) sb_puts(&b, ",");
     sb_puts(&b, "{\"name\":");
@@ -620,6 +624,21 @@ h_me(req_t *r) {
   }
   sb_puts(&b, "]}");
   return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_me_password(req_t *r) {
+  char oldp[256], newp[256], err[256];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "old", oldp, sizeof(oldp));
+  get_param(r->body, "new", newp, sizeof(newp));
+  int ret = cfg_change_own_password(r->user.name, oldp, newp, err, sizeof(err));
+  memset(oldp, 0, sizeof(oldp));
+  memset(newp, 0, sizeof(newp));
+  if(ret) return send_err(r, 400, err);
+  LOG_PRINTF("ps5share: '%s' cambió su contraseña\n", r->user.name);
+  return send_ok(r);
 }
 
 
@@ -946,8 +965,10 @@ h_admin_users(req_t *r) {
     if(i) sb_puts(&b, ",");
     sb_puts(&b, "{\"name\":");
     sb_json_str(&b, u->name);
-    sb_printf(&b, ",\"admin\":%s,\"enabled\":%s,\"mounts\":[",
-              u->admin ? "true" : "false", u->enabled ? "true" : "false");
+    sb_printf(&b, ",\"admin\":%s,\"enabled\":%s,\"can_chpass\":%s,\"must_chpass\":%s,"
+              "\"mounts\":[",
+              u->admin ? "true" : "false", u->enabled ? "true" : "false",
+              u->can_chpass ? "true" : "false", u->must_chpass ? "true" : "false");
     for(int j=0; j<u->nmounts; j++) {
       if(j) sb_puts(&b, ",");
       sb_puts(&b, "{\"name\":");
@@ -1020,6 +1041,10 @@ h_admin_user_save(req_t *r) {
   u.admin = !strcmp(tmp, "1");
   get_param(r->body, "enabled", tmp, sizeof(tmp));
   u.enabled = !strcmp(tmp, "1");
+  get_param(r->body, "can_chpass", tmp, sizeof(tmp));
+  u.can_chpass = !strcmp(tmp, "1");
+  get_param(r->body, "must_chpass", tmp, sizeof(tmp));
+  u.must_chpass = !strcmp(tmp, "1");
 
   if(!(mounts = malloc(HTTP_BODY_MAX))) return send_err(r, 500, "Sin memoria");
   get_param(r->body, "mounts", mounts, HTTP_BODY_MAX);
@@ -1172,6 +1197,7 @@ static const route_t routes[] = {
   {"POST", "/api/login",                h_login,               0},
   {"POST", "/api/logout",               h_logout,              0},
   {"GET",  "/api/me",                   h_me,                  1},
+  {"POST", "/api/me/password",          h_me_password,         1},
   {"GET",  "/api/fs/list",              h_fs_list,             1},
   {"GET",  "/api/fs/get",               h_fs_get,              1},
   {"HEAD", "/api/fs/get",               h_fs_get,              1},
@@ -1233,6 +1259,11 @@ handle(req_t *r) {
         return;
       }
       r->authed = 1;
+      /* Con el cambio de contraseña pendiente solo puede cambiarla. */
+      if(r->user.must_chpass && rt->fn != h_me && rt->fn != h_me_password) {
+        send_err(r, 403, "Debes cambiar tu contraseña antes de continuar");
+        return;
+      }
       if(rt->auth == 2 && !r->user.admin) {
         send_err(r, 403, "Solo para administradores");
         return;

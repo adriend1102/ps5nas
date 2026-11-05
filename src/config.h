@@ -34,6 +34,8 @@ typedef struct user {
   char hash[CFG_HASH_HEX+1];
   int  admin;
   int  enabled;
+  int  can_chpass;            /* puede cambiar su propia contraseña desde la web */
+  int  must_chpass;           /* debe cambiarla en el próximo inicio de sesión web */
   int  nmounts;
   mount_t mounts[CFG_MAX_MOUNTS];
 } user_t;
@@ -77,6 +79,9 @@ void cfg_set_password(user_t *u, const char *pass);
 
 /* Alta/edición/baja (con el lock tomado por dentro). Devuelven 0 o -1 con msg. */
 int  cfg_upsert_user(const user_t *u, const char *newpass, char *err, size_t errlen);
+/* El propio usuario cambia su contraseña (comprueba la actual). */
+int  cfg_change_own_password(const char *name, const char *oldpass, const char *newpass,
+                             char *err, size_t errlen);
 int  cfg_delete_user(const char *name, char *err, size_t errlen);
 int  cfg_update_settings(const settings_t *s, char *err, size_t errlen);
 

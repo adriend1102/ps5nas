@@ -8,6 +8,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __PROSPERO__
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
 
 #include "config.h"
 #include "log.h"
@@ -107,11 +111,43 @@ from_hex(const char *in, uint8_t *out, size_t n) {
 }
 
 
+/* Bytes aleatorios criptográficos.  En PS5 se piden al kernel
+   (kern.arandom) y, si no, a /dev/urandom; el arc4random de la libc del SDK
+   es el antiguo basado en RC4 y solo se usa como último recurso. */
+static void
+random_bytes(uint8_t *buf, size_t n) {
+#ifdef __PROSPERO__
+  int mib[2] = {CTL_KERN, KERN_ARND};
+  size_t done = 0;
+  while(done < n) {
+    size_t len = n - done;
+    if(sysctl(mib, 2, buf + done, &len, NULL, 0) || !len) break;
+    done += len;
+  }
+  if(done == n) return;
+
+  int fd = open("/dev/urandom", O_RDONLY);
+  if(fd >= 0) {
+    done = 0;
+    while(done < n) {
+      ssize_t r = read(fd, buf + done, n - done);
+      if(r <= 0) break;
+      done += (size_t)r;
+    }
+    close(fd);
+    if(done == n) return;
+  }
+  LOG_PUTS("ps5share: aviso, usando arc4random como fuente aleatoria");
+#endif
+  arc4random_buf(buf, n);
+}
+
+
 void
 cfg_random_hex(char *out, size_t nbytes) {
   uint8_t buf[64];
   if(nbytes > sizeof(buf)) nbytes = sizeof(buf);
-  arc4random_buf(buf, nbytes);
+  random_bytes(buf, nbytes);
   to_hex(buf, nbytes, out);
 }
 

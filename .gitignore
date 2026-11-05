@@ -2,3 +2,6 @@
 ps5share-linux
 ps5share-data/
 dist/
+build/
+third_party/wolfssl/
+third_party/wolfssh/

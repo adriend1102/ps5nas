@@ -46,6 +46,9 @@ typedef struct settings {
   uint16_t pasv_max;
   char     pasv_address[64];  /* IP a anunciar en PASV cuando el control llega por loopback (Tailscale) */
   int      kill_ftpsrv;       /* matar ftpsrv.elf original al arrancar */
+  uint16_t sftp_port;
+  int      sftp_enabled;
+  int      ftp_enabled;       /* FTP sin cifrar: desactivado por defecto */
 } settings_t;
 
 
@@ -84,4 +87,5 @@ int  cfg_valid_mountname(const char *s);
 
 /* Utilidades de aleatoriedad / tiempo constante. */
 void cfg_random_hex(char *out, size_t nbytes);
+int  ps5share_rand_seed(unsigned char *out, unsigned int sz);   /* para wolfCrypt */
 int  cfg_consttime_eq(const char *a, const char *b);

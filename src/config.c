@@ -143,6 +143,13 @@ random_bytes(uint8_t *buf, size_t n) {
 }
 
 
+int
+ps5share_rand_seed(unsigned char *out, unsigned int sz) {
+  random_bytes(out, sz);
+  return 0;
+}
+
+
 void
 cfg_random_hex(char *out, size_t nbytes) {
   uint8_t buf[64];
@@ -242,6 +249,9 @@ defaults(settings_t *s) {
   s->pasv_min = 50000;
   s->pasv_max = 50099;
   s->kill_ftpsrv = 1;
+  s->sftp_port = 2222;
+  s->sftp_enabled = 1;
+  s->ftp_enabled = 0;
 }
 
 
@@ -280,6 +290,9 @@ load_file(const char *path) {
       else if(!strcmp(k, "pasv_min")) g_settings.pasv_min = atoi(v);
       else if(!strcmp(k, "pasv_max")) g_settings.pasv_max = atoi(v);
       else if(!strcmp(k, "kill_ftpsrv")) g_settings.kill_ftpsrv = atoi(v);
+      else if(!strcmp(k, "sftp_port")) g_settings.sftp_port = atoi(v);
+      else if(!strcmp(k, "sftp_enabled")) g_settings.sftp_enabled = atoi(v);
+      else if(!strcmp(k, "ftp_enabled")) g_settings.ftp_enabled = atoi(v);
       else if(!strcmp(k, "pasv_address"))
         snprintf(g_settings.pasv_address, sizeof(g_settings.pasv_address), "%s", v);
     } else if(!strcmp(fld[0], "user") && n >= 6) {
@@ -327,6 +340,9 @@ cfg_save_locked(void) {
   fprintf(f, "set\tpasv_max\t%u\n", g_settings.pasv_max);
   fprintf(f, "set\tpasv_address\t%s\n", g_settings.pasv_address);
   fprintf(f, "set\tkill_ftpsrv\t%d\n", g_settings.kill_ftpsrv);
+  fprintf(f, "set\tsftp_port\t%u\n", g_settings.sftp_port);
+  fprintf(f, "set\tsftp_enabled\t%d\n", g_settings.sftp_enabled);
+  fprintf(f, "set\tftp_enabled\t%d\n", g_settings.ftp_enabled);
 
   for(int i=0; i<g_nusers; i++) {
     user_t *u = &g_users[i];
@@ -545,8 +561,9 @@ cfg_delete_user(const char *name, char *err, size_t errlen) {
 int
 cfg_update_settings(const settings_t *s, char *err, size_t errlen) {
   int r = -1;
-  if(!s->ftp_port || !s->http_port || s->ftp_port == s->http_port) {
-    snprintf(err, errlen, "Puertos no válidos");
+  if(!s->ftp_port || !s->http_port || !s->sftp_port || s->ftp_port == s->http_port ||
+     s->sftp_port == s->http_port || s->sftp_port == s->ftp_port) {
+    snprintf(err, errlen, "Puertos no válidos o repetidos");
     return -1;
   }
   if(s->pasv_min > s->pasv_max || (s->pasv_min && s->pasv_min < 1024)) {

@@ -205,6 +205,95 @@ check((s, s2, s3, s4) == (200, 200, 200, 200) and not os.path.exists(f"{BASE}/sh
 s, j, _ = bob.req("POST", "/api/fs/delete" + q(path="/Buzon"))
 check(s == 403, "no se puede borrar la raíz del montaje (web)")
 
+print("== SFTP")
+import paramiko, hashlib, socket, stat as pystat
+
+
+def sftp_connect(user, pw):
+    t = paramiko.Transport((HOST, 2222))
+    t.connect(username=user, password=pw)
+    return t, paramiko.SFTPClient.from_transport(t)
+
+
+try:
+    sftp_connect("bob", "malapass")
+    check(False, "SFTP: contraseña mala rechazada")
+except paramiko.AuthenticationException:
+    check(True, "SFTP: contraseña mala rechazada")
+
+t, sf = sftp_connect("bob", "bobpass1")
+check(sorted(sf.listdir("/")) == ["Buzon", "Peliculas"], "SFTP: raíz virtual con sus carpetas")
+check(sf.normalize(".") == "/", "SFTP: REALPATH '.' es '/'")
+check(sorted(sf.listdir("/Peliculas")) == ["big.bin", "sub"], "SFTP: symlink oculto en listado")
+st = sf.stat("/Peliculas/big.bin")
+check(st.st_size == 3000000 and not (st.st_mode & 0o222), "SFTP: stat, solo lectura sin bits de escritura")
+data = sf.open("/Peliculas/big.bin").read()
+check(data == open(f"{BASE}/share/movies/big.bin", "rb").read(), "SFTP: descarga completa")
+f2 = sf.open("/Peliculas/big.bin")
+f2.seek(2999990)
+check(len(f2.read()) == 10, "SFTP: lectura con offset")
+f2.close()
+
+for desc, fn in [
+    ("subir a solo lectura", lambda: sf.open("/Peliculas/x.txt", "w").write(b"x")),
+    ("borrar en solo lectura", lambda: sf.remove("/Peliculas/big.bin")),
+    ("mkdir en solo lectura", lambda: sf.mkdir("/Peliculas/d")),
+    ("mkdir en la raíz virtual", lambda: sf.mkdir("/nueva")),
+    ("borrar raíz de montaje", lambda: sf.rmdir("/Buzon")),
+    ("renombrar raíz de montaje", lambda: sf.rename("/Buzon", "/Buzon2")),
+]:
+    try:
+        fn()
+        check(False, "SFTP: denegado " + desc)
+    except (PermissionError, IOError, OSError):
+        check(True, "SFTP: denegado " + desc)
+
+for path in ["/Peliculas/../../secret/pw.txt", "../../etc/passwd", "/Peliculas/escape/pw.txt",
+             "/etc/passwd", "/Peliculas/sub/../../../../etc/passwd"]:
+    try:
+        sf.open(path).read()
+        check(False, f"SFTP: escape bloqueado {path}")
+    except (IOError, OSError):
+        check(True, f"SFTP: escape bloqueado {path}")
+
+payload = os.urandom(20_000_000)
+with sf.open("/Buzon/grande.bin", "wb") as fh:
+    fh.set_pipelined(True)
+    fh.write(payload)
+check(hashlib.sha256(open(f"{BASE}/share/inbox/grande.bin", "rb").read()).digest()
+      == hashlib.sha256(payload).digest(), "SFTP: subida de 20 MB íntegra")
+back = sf.open("/Buzon/grande.bin").read()
+check(back == payload, "SFTP: descarga de 20 MB íntegra")
+sf.mkdir("/Buzon/dir")
+sf.rename("/Buzon/grande.bin", "/Buzon/dir/g.bin")
+sf.posix_rename("/Buzon/dir/g.bin", "/Buzon/dir/g2.bin")
+check(sf.listdir("/Buzon/dir") == ["g2.bin"], "SFTP: mkdir, rename y posix-rename")
+try:
+    sf.rename("/Buzon/dir/g2.bin", "/Peliculas/robado.bin")
+    check(False, "SFTP: mover a solo lectura denegado")
+except (IOError, OSError):
+    check(True, "SFTP: mover a solo lectura denegado")
+sf.remove("/Buzon/dir/g2.bin")
+sf.rmdir("/Buzon/dir")
+check(not os.path.exists(f"{BASE}/share/inbox/dir"), "SFTP: remove y rmdir")
+for i in range(150):
+    open(f"{BASE}/share/inbox/n{i:03d}.txt", "w").close()
+check(len(sf.listdir("/Buzon")) >= 150, "SFTP: READDIR en varias tandas")
+for i in range(150):
+    os.remove(f"{BASE}/share/inbox/n{i:03d}.txt")
+
+try:
+    ch = t.open_session()
+    ch.exec_command("id")
+    check(False, "SFTP: exec/shell denegado")
+except (paramiko.SSHException, paramiko.ChannelException):
+    check(True, "SFTP: exec/shell denegado")
+try:
+    t.open_channel("direct-tcpip", ("127.0.0.1", 8000), ("127.0.0.1", 1))
+    check(False, "SFTP: reenvío de puertos denegado")
+except paramiko.ChannelException:
+    check(True, "SFTP: reenvío de puertos denegado")
+
 print("== Revocación en caliente")
 s, j, _ = admin.req("POST", "/api/admin/user", {"name": "bob", "password": "", "admin": "0",
                                                 "enabled": "0", "mounts": mounts})
@@ -216,6 +305,16 @@ except (ftplib.error_temp, ftplib.error_perm, EOFError) as e:
     check(True, "sesión FTP de bob cortada")
 s, j, _ = bob.req("GET", "/api/me")
 check(s == 401, "sesión web de bob invalidada")
+try:
+    sf.listdir("/Buzon")
+    check(False, "sesión SFTP de bob cortada")
+except Exception:
+    check(True, "sesión SFTP de bob cortada")
+try:
+    sftp_connect("bob", "bobpass1")
+    check(False, "bob desactivado no entra por SFTP")
+except paramiko.AuthenticationException:
+    check(True, "bob desactivado no entra por SFTP")
 s, j, _ = admin.req("POST", "/api/admin/user/delete", {"name": "bob"})
 check(s == 200, "borrar usuario")
 s, j, _ = admin.req("POST", "/api/admin/user/delete", {"name": "admin"})

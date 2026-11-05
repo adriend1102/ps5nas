@@ -190,24 +190,29 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
     <section id="t-settings" class="hidden">
       <form class="card pad" id="f-settings" style="max-width:640px">
         <h2>Ajustes del servidor</h2>
+        <div class="hint">Los cambios de puertos y la activación de SFTP/FTP se aplican al volver a cargar el payload.</div>
+        <label class="f">Puerto web</label><input type="number" name="http_port" min="1" max="65535">
+
+        <h2 style="margin-top:22px">SFTP (recomendado, cifrado)</h2>
+        <label class="check"><input type="checkbox" name="sftp_enabled"> Activar SFTP</label>
+        <label class="f">Puerto SFTP</label><input type="number" name="sftp_port" min="1" max="65535">
+        <div class="hint">Huella de la clave del servidor. La primera vez que conectes, el cliente te la enseñará: comprueba que coincide.</div>
+        <div class="hint" id="fps"></div>
+
+        <h2 style="margin-top:22px">FTP (sin cifrar)</h2>
+        <label class="check"><input type="checkbox" name="ftp_enabled"> Activar FTP (las contraseñas viajan sin cifrar por tu red)</label>
         <div class="row">
           <div class="grow"><label class="f">Puerto FTP</label><input type="number" name="ftp_port" min="1" max="65535"></div>
-          <div class="grow"><label class="f">Puerto web</label><input type="number" name="http_port" min="1" max="65535"></div>
-        </div>
-        <div class="hint">Los cambios de puerto se aplican al reiniciar el payload.</div>
-        <div class="row">
-          <div class="grow"><label class="f">Puertos pasivos FTP: desde</label><input type="number" name="pasv_min" min="0" max="65535"></div>
+          <div class="grow"><label class="f">Pasivos: desde</label><input type="number" name="pasv_min" min="0" max="65535"></div>
           <div class="grow"><label class="f">hasta</label><input type="number" name="pasv_max" min="0" max="65535"></div>
         </div>
-        <label class="f">IP de Tailscale de la PS5 (para FTP pasivo remoto)</label>
+        <label class="f">IP de Tailscale de la PS5 (solo para FTP pasivo remoto)</label>
         <input type="text" name="pasv_address" placeholder="100.x.y.z">
-        <div class="hint">Cópiala de la página de estado de Tailscale en la PS5 (puerto 8090) o de la consola de administración de Tailscale.
-          Solo se usa cuando la conexión llega a través de Tailscale; en casa se sigue usando la IP local.</div>
         <label class="check"><input type="checkbox" name="kill_ftpsrv"> Detener el ftpsrv original al arrancar (recomendado: no tiene contraseña)</label>
         <div class="err" id="e-settings"></div>
         <button class="btn primary">Guardar ajustes</button>
 
-        <h2 style="margin-top:26px">Direcciones de la consola</h2>
+        <h2 style="margin-top:26px">Cómo conectarse</h2>
         <div id="ifaces" class="hint"></div>
       </form>
     </section>
@@ -548,12 +553,19 @@ async function loadSettings(){
   let s;
   try { s = await api("GET", "/api/admin/settings"); } catch(e) { return toast(e.message); }
   const f = $("#f-settings");
-  for (const k of ["ftp_port","http_port","pasv_min","pasv_max","pasv_address"]) f[k].value = s[k];
-  f.kill_ftpsrv.checked = s.kill_ftpsrv;
+  for (const k of ["ftp_port","http_port","sftp_port","pasv_min","pasv_max","pasv_address"]) f[k].value = s[k];
+  for (const k of ["kill_ftpsrv","sftp_enabled","ftp_enabled"]) f[k].checked = s[k];
+  const fps = $("#fps"); fps.textContent = "";
+  if (s.fp_ecdsa) fps.append(el("div", {}, "ECDSA: ", el("code", {}, s.fp_ecdsa)));
+  if (s.fp_rsa) fps.append(el("div", {}, "RSA: ", el("code", {}, s.fp_rsa)));
+  if (!s.fp_ecdsa && !s.fp_rsa) fps.append(el("div", {}, "SFTP no está en marcha."));
   const box = $("#ifaces"); box.textContent = "";
-  for (const i of s.interfaces) box.append(el("div", {}, el("code", {}, i.ip), " (" + i.name + ")"));
-  box.append(el("div", {style:"margin-top:8px"}, "En casa: ftp://", el("code",{}, location.hostname + ":" + s.ftp_port),
-    " · web: ", el("code",{}, location.host)));
+  const h = location.hostname;
+  if (s.sftp_enabled) box.append(el("div", {}, "SFTP: servidor ", el("code",{}, h), " puerto ", el("code",{}, String(s.sftp_port)), ", con tu usuario y contraseña."));
+  if (s.ftp_enabled) box.append(el("div", {}, "FTP: ", el("code",{}, "ftp://" + h + ":" + s.ftp_port), " (modo pasivo)."));
+  box.append(el("div", {}, "Web: ", el("code",{}, location.origin)));
+  box.append(el("div", {style:"margin-top:8px"}, "Direcciones de la consola: ",
+    ...s.interfaces.filter(i => !i.ip.startsWith("127.")).map(i => el("code", {style:"margin-right:6px"}, i.ip))));
 }
 $("#f-settings").addEventListener("submit", async ev => {
   ev.preventDefault();
@@ -561,8 +573,9 @@ $("#f-settings").addEventListener("submit", async ev => {
   $("#e-settings").textContent = "";
   try {
     await api("POST", "/api/admin/settings", form({ftp_port:f.ftp_port.value, http_port:f.http_port.value,
-      pasv_min:f.pasv_min.value, pasv_max:f.pasv_max.value, pasv_address:f.pasv_address.value.trim(),
-      kill_ftpsrv: f.kill_ftpsrv.checked ? "1" : "0"}));
+      sftp_port:f.sftp_port.value, pasv_min:f.pasv_min.value, pasv_max:f.pasv_max.value,
+      pasv_address:f.pasv_address.value.trim(), kill_ftpsrv: f.kill_ftpsrv.checked ? "1" : "0",
+      sftp_enabled: f.sftp_enabled.checked ? "1" : "0", ftp_enabled: f.ftp_enabled.checked ? "1" : "0"}));
     toast("Ajustes guardados");
   } catch(e) { $("#e-settings").textContent = e.message; }
 });

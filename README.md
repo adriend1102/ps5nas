@@ -3,8 +3,9 @@
 Servidor de archivos **multiusuario** que corre directamente en una PS5 con
 jailbreak. Cada usuario tiene su contraseña y solo ve las carpetas que le
 asignes, en **solo lectura** o **lectura y escritura**. Se gestiona desde una
-**web** (usuarios, carpetas y ajustes) y se accede por **FTP** o desde el propio
-navegador (explorador de archivos con subida y descarga).
+**web** (usuarios, carpetas y ajustes) y se accede por **SFTP** (cifrado), desde
+el propio navegador (explorador de archivos con subida y descarga) o, si lo
+activas, por FTP clásico.
 
 Está pensado para funcionar junto a **Tailscale para PS5**, de modo que la
 consola sea a la vez el servidor y el punto de acceso VPN, sin necesitar ningún
@@ -17,18 +18,18 @@ Törnblom (GPLv3).
  Móvil / portátil fuera de casa                 PS5 (siempre encendida)
  ┌───────────────────────────┐   Tailscale    ┌──────────────────────────────┐
  │ Navegador → http://ps5:8000│ ═════════════► │ tailscale.elf  (VPN, :8090)  │
- │ FileZilla → ftp://ps5:2121 │  (WireGuard)   │   └► reenvía a 127.0.0.1     │
+ │ Mis archivos → SFTP ps5:2222│  (WireGuard)  │   └► reenvía a 127.0.0.1     │
  └───────────────────────────┘                 │ ps5share.elf                 │
-                                               │   web :8000 · FTP :2121      │
+                                               │   web :8000 · SFTP :2222     │
  En casa: http://192.168.100.208:8000          │   usuarios → carpetas del SSD│
-          ftp://192.168.100.208:2121           └──────────────────────────────┘
+          sftp 192.168.100.208 puerto 2222     └──────────────────────────────┘
 ```
 
 ## Qué incluye
 
 | | |
 |---|---|
-| `ps5share.elf` | El payload para la PS5 (web + FTP). |
+| `ps5share.elf` | El payload para la PS5 (web + SFTP, y FTP opcional). |
 | `windows/enviar-payload.ps1` | Envía cualquier `.elf` a la PS5 (puerto 9021). |
 | `windows/instalar-tailscale-ps5.ps1` | Descarga la última versión de Tailscale para PS5 y la envía. |
 | `windows/planB-windows-subnet-router.ps1` | Plan B si Tailscale no funciona en tu firmware: el Windows hace de puente. |
@@ -44,9 +45,11 @@ cd windows
 .\enviar-payload.ps1 -Archivo ..\ps5share.elf -PS5 192.168.100.208
 ```
 
-En la PS5 aparecerá una notificación con las direcciones. Al arrancar,
-ps5share **detiene el ftpsrv original** (no tiene contraseña y daría acceso a
-todo el disco a cualquiera); se puede desactivar en Ajustes.
+En la PS5 aparecerá una notificación con las direcciones. La primera vez
+genera las claves del servidor SFTP, así que puede tardar un poco más en
+arrancar. Al arrancar, ps5share **detiene el ftpsrv original** (no tiene
+contraseña y daría acceso a todo el disco a cualquiera); se puede desactivar en
+Ajustes.
 
 ### 2. Crear el administrador y los usuarios
 
@@ -81,13 +84,12 @@ En la página de estado de Tailscale (`http://192.168.100.208:8090`):
 3. En *Settings → TCP ports never exposed* añade **8080, 9021, 2323, 3232**.
    Son websrv, el cargador de payloads, la shell y el log de otros payloads:
    ninguno pide contraseña y no deben quedar accesibles desde fuera.
-4. Copia la IP de Tailscale de la PS5 (`100.x.y.z`) y pégala en
-   **ps5share → Ajustes → IP de Tailscale**. Hace falta para el FTP en modo
-   pasivo a través de Tailscale (FileZilla y WinSCP suelen funcionar igual sin
-   ella porque usan EPSV, pero así va con cualquier cliente).
+4. Apunta la IP de Tailscale de la PS5 (`100.x.y.z`). Si activas el FTP,
+   pégala también en **ps5share → Ajustes → IP de Tailscale** (solo la usa el
+   FTP pasivo; SFTP no la necesita).
 
-Desde cualquier dispositivo con Tailscale: `http://ps5:8000` (o
-`http://100.x.y.z:8000`) y `ftp://ps5:2121`.
+Desde cualquier dispositivo con Tailscale: web en `http://100.x.y.z:8000` (o
+`http://ps5:8000` con MagicDNS) y SFTP en `100.x.y.z`, puerto `2222`.
 
 ### 4. Dar acceso a otras personas
 
@@ -109,14 +111,29 @@ jailbreak. Añade `tailscale.elf` y `ps5share.elf` a tu cargador automático
 cada jailbreak. La PS5 no atiende conexiones en modo reposo: tiene que estar
 encendida.
 
-## Clientes FTP
+## Conectarse con SFTP
 
-* Protocolo: FTP sin cifrar, puerto **2121**, modo **pasivo**.
-* Usuario y contraseña: los que creaste en la web.
-* Puertos pasivos: 50000–50099 (configurable). En casa no hay que abrir nada en
-  el router; por Tailscale tampoco.
+* Servidor: `192.168.100.208` en casa, o la IP `100.x.y.z` de Tailscale fuera.
+* Puerto: **2222**. Usuario y contraseña: los que creaste en la web.
+* La primera vez el cliente te enseña la **huella de la clave** del servidor:
+  comprueba que coincide con la de **Ajustes** y acéptala. Si algún día te avisa
+  de que la huella ha cambiado sin que hayas borrado las claves, no conectes.
 
-FileZilla, WinSCP, el explorador de Windows y las apps de móvil típicas sirven.
+**Samsung «Mis archivos»:** *Almacenamiento de red → Añadir almacenamiento de
+red → SFTP*. Servidor, puerto 2222, usuario y contraseña. Con Tailscale
+activado en el móvil funciona igual desde fuera de casa (usa la IP 100.x).
+
+**PC:** WinSCP o FileZilla (protocolo SFTP, puerto 2222), o desde la terminal
+`sftp -P 2222 usuario@192.168.100.208`.
+
+Solo se permite SFTP: no hay shell, ni ejecución de comandos, ni reenvío de
+puertos, aunque el usuario tenga contraseña válida.
+
+### FTP (opcional)
+
+Desactivado por defecto porque no cifra nada. Si algún cliente solo habla FTP,
+actívalo en Ajustes: puerto **2121**, modo **pasivo**, puertos pasivos
+50000–50099.
 
 ## Seguridad
 
@@ -127,10 +144,16 @@ FileZilla, WinSCP, el explorador de Windows y las apps de móvil típicas sirven
 * Web: cookie `HttpOnly` + `SameSite=Strict`, protección CSRF por cabecera,
   bloqueo temporal tras 10 intentos fallidos, los archivos se sirven en un
   *sandbox* para que un HTML subido no pueda ejecutar nada.
-* FTP: bloqueo tras 5 intentos por conexión, la conexión de datos solo se
-  acepta desde la IP del cliente, sin `PORT` hacia terceros (anti *bounce*).
-* **FTP y la web van sin cifrar.** A través de Tailscale el tráfico viaja
-  cifrado por WireGuard; en tu red de casa no. No abras puertos en el router.
+* SFTP: SSH con [wolfSSH](https://github.com/wolfSSL/wolfssh) y
+  [wolfSSL](https://github.com/wolfSSL/wolfssl) (curve25519, ECDH, AES-GCM/CTR,
+  HMAC-SHA2). Claves del servidor ECDSA P-256 y RSA 3072 generadas en la propia
+  consola (`/data/ps5share/ssh_host_*.der`). Solo autenticación por contraseña,
+  bloqueo tras 5 intentos por conexión.
+* FTP (si lo activas): bloqueo tras 5 intentos por conexión, la conexión de
+  datos solo se acepta desde la IP del cliente, sin `PORT` hacia terceros.
+* **La web y el FTP van sin cifrar.** A través de Tailscale todo viaja cifrado
+  por WireGuard; en tu red de casa, solo SFTP va cifrado. No abras puertos en
+  el router.
 * Por Tailscale todas las conexiones llegan a ps5share desde `127.0.0.1`, así
   que el bloqueo por intentos fallidos de la web se aplica a todos los
   accesos remotos a la vez.
@@ -147,7 +170,7 @@ red Tailscale:
 ```
 
 Después aprueba la ruta en la consola de Tailscale. Desde fuera usarás
-`http://192.168.100.208:8000` y `ftp://192.168.100.208:2121`. El Windows tiene
+`http://192.168.100.208:8000` y SFTP a `192.168.100.208`, puerto 2222. El Windows tiene
 que estar encendido (y sin suspenderse).
 
 ## Compilar
@@ -155,6 +178,7 @@ que estar encendido (y sin suspenderse).
 Con el [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) en Linux o WSL:
 
 ```sh
+./third_party/fetch.sh          # una vez: wolfSSL v5.9.4 y wolfSSH v1.6.0
 export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 make -f Makefile.ps5            # genera ps5share.elf
 make -f Makefile.ps5 test PS5_HOST=192.168.100.208   # compila y envía
@@ -163,8 +187,8 @@ make -f Makefile.ps5 test PS5_HOST=192.168.100.208   # compila y envía
 Para probar en Linux sin consola:
 
 ```sh
-./test/run_tests.sh             # compila la versión Linux y pasa ~60 pruebas
-./ps5share-linux -d ./datos     # web en :8000, FTP en :2121
+./test/run_tests.sh             # compila la versión Linux y pasa ~85 pruebas
+./ps5share-linux -d ./datos     # web en :8000, SFTP en :2222
 ```
 
 ### Estructura
@@ -173,7 +197,9 @@ Para probar en Linux sin consola:
 |---|---|
 | `src/config.c` | `users.conf`, usuarios, contraseñas (PBKDF2), ajustes |
 | `src/vfs.c` | Carpetas virtuales por usuario y bloqueo de escapes |
+| `src/sftp.c` | Servidor SFTP v3 sobre wolfSSH, con el mismo VFS y permisos |
 | `src/ftp.c` | Servidor FTP (derivado de ftpsrv) con login y permisos |
+| `third_party/` | Configuración de wolfSSL/wolfSSH y script de descarga |
 | `src/http.c` | Servidor web y API JSON |
 | `web/index.html` | Interfaz web (se incrusta en el ELF con `tools/embed.py`) |
 | `src/main-prospero.c` | Arranque en PS5 |
@@ -190,6 +216,9 @@ set	pasv_min	50000
 set	pasv_max	50099
 set	pasv_address	100.101.102.103
 set	kill_ftpsrv	1
+set	sftp_port	2222
+set	sftp_enabled	1
+set	ftp_enabled	0
 user	ana	<sal>	<hash>	1	1
 mount	ana	rw	Fotos	/mnt/ext0/Fotos
 mount	ana	ro	Películas	/mnt/usb0/Peliculas
@@ -202,4 +231,5 @@ administrador.
 
 ## Licencia
 
-GPLv3 (ver `LICENSE`). Basado en ftpsrv © John Törnblom.
+GPLv3 (ver `LICENSE`). Basado en ftpsrv © John Törnblom. Incluye wolfSSL y
+wolfSSH (GPLv3) © wolfSSL Inc.

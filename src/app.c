@@ -16,7 +16,21 @@
 #include "config.h"
 #include "ftp.h"
 #include "http.h"
+#include "sftp.h"
 #include "log.h"
+
+
+static void*
+sftp_thread(void *arg) {
+  for(;;) {
+    cfg_lock();
+    uint16_t port = cfg_settings()->sftp_port;
+    cfg_unlock();
+    sftp_serve(port);
+    sleep(5);
+  }
+  return NULL;
+}
 
 
 static void*
@@ -77,16 +91,21 @@ app_run(const char *confdir, void (*notify_fn)(const char *msg)) {
   int setup = cfg_nusers() == 0;
   cfg_unlock();
 
-  snprintf(msg, sizeof(msg), "ps5share %s\nWeb: http://%s:%u\nFTP: %s:%u%s",
-           VERSION_TAG, ip[0] ? ip : "?", s.http_port, ip[0] ? ip : "?", s.ftp_port,
-           setup ? "\nAbre la web para crear el administrador" : "");
+  int sftp_ok = s.sftp_enabled && !sftp_init(confdir);
+
+  int n = snprintf(msg, sizeof(msg), "ps5share %s\nWeb: http://%s:%u",
+                   VERSION_TAG, ip[0] ? ip : "?", s.http_port);
+  if(sftp_ok) n += snprintf(msg + n, sizeof(msg) - n, "\nSFTP: %s:%u", ip[0] ? ip : "?", s.sftp_port);
+  if(s.ftp_enabled) n += snprintf(msg + n, sizeof(msg) - n, "\nFTP: %s:%u", ip[0] ? ip : "?", s.ftp_port);
+  if(setup) snprintf(msg + n, sizeof(msg) - n, "\nAbre la web para crear el administrador");
   LOG_PRINTF("%s\n", msg);
   if(notify_fn) notify_fn(msg);
 
   pthread_attr_init(&attr);
   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
   pthread_attr_setstacksize(&attr, 512 * 1024);
-  pthread_create(&t, &attr, ftp_thread, NULL);
+  if(sftp_ok) pthread_create(&t, &attr, sftp_thread, NULL);
+  if(s.ftp_enabled) pthread_create(&t, &attr, ftp_thread, NULL);
   pthread_attr_destroy(&attr);
 
   for(;;) {

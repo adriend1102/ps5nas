@@ -29,6 +29,7 @@
 
 #include "config.h"
 #include "http.h"
+#include "sftp.h"
 #include "io.h"
 #include "log.h"
 #include "vfs.h"
@@ -1094,10 +1095,16 @@ h_admin_settings_get(req_t *r) {
   cfg_unlock();
 
   sb_printf(&b, "{\"ftp_port\":%u,\"http_port\":%u,\"pasv_min\":%u,\"pasv_max\":%u,"
-            "\"kill_ftpsrv\":%s,\"pasv_address\":",
+            "\"kill_ftpsrv\":%s,\"sftp_port\":%u,\"sftp_enabled\":%s,\"ftp_enabled\":%s,"
+            "\"pasv_address\":",
             s.ftp_port, s.http_port, s.pasv_min, s.pasv_max,
-            s.kill_ftpsrv ? "true" : "false");
+            s.kill_ftpsrv ? "true" : "false", s.sftp_port,
+            s.sftp_enabled ? "true" : "false", s.ftp_enabled ? "true" : "false");
   sb_json_str(&b, s.pasv_address);
+  sb_puts(&b, ",\"fp_ecdsa\":");
+  sb_json_str(&b, sftp_fingerprint_ecdsa());
+  sb_puts(&b, ",\"fp_rsa\":");
+  sb_json_str(&b, sftp_fingerprint_rsa());
   sb_puts(&b, ",\"interfaces\":[");
   if(!getifaddrs(&ifa)) {
     int first = 1;
@@ -1134,6 +1141,9 @@ h_admin_settings_set(req_t *r) {
   if(!get_param(r->body, "pasv_min", v, sizeof(v))) s.pasv_min = (uint16_t)atoi(v);
   if(!get_param(r->body, "pasv_max", v, sizeof(v))) s.pasv_max = (uint16_t)atoi(v);
   if(!get_param(r->body, "kill_ftpsrv", v, sizeof(v))) s.kill_ftpsrv = !strcmp(v, "1");
+  if(!get_param(r->body, "sftp_port", v, sizeof(v))) s.sftp_port = (uint16_t)atoi(v);
+  if(!get_param(r->body, "sftp_enabled", v, sizeof(v))) s.sftp_enabled = !strcmp(v, "1");
+  if(!get_param(r->body, "ftp_enabled", v, sizeof(v))) s.ftp_enabled = !strcmp(v, "1");
   if(!get_param(r->body, "pasv_address", v, sizeof(v))) {
     if(strlen(v) >= sizeof(s.pasv_address)) return send_err(r, 400, "IP demasiado larga");
     memcpy(s.pasv_address, v, strlen(v) + 1);

@@ -1,23 +1,40 @@
 # ps5share - compilación para Linux (pruebas locales)
+#   ./third_party/fetch.sh            (una vez: descarga wolfSSL/wolfSSH)
 #   make -f Makefile.linux && ./ps5share-linux -d ./ps5share-data
 
 VERSION_TAG := $(shell git describe --abbrev=6 --dirty --always --tags 2>/dev/null || echo dev)
+BUILD := build/linux
+
+include third_party/wolf.mk
 
 CFLAGS ?= -O2 -g
-override CFLAGS += -Wall -Werror -DVERSION_TAG=\"$(VERSION_TAG)\" -Isrc -D_GNU_SOURCE
+override CFLAGS += -Wall -Werror -DVERSION_TAG=\"$(VERSION_TAG)\" -Isrc -D_GNU_SOURCE \
+                   -DWOLFSSL_USER_SETTINGS -I$(WOLF_DIR) -I$(WOLF_DIR)/wolfssl -I$(WOLF_DIR)/wolfssh
 
-SOURCE := src/app.c src/config.c src/vfs.c src/ftp.c src/http.c src/io.c
+SOURCE := src/app.c src/config.c src/vfs.c src/ftp.c src/http.c src/sftp.c src/io.c
 SOURCE += src/sha256.c src/notify.c src/main-linux.c
 
+WOLF_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(WOLF_SRC))
+
 all: ps5share-linux
+
+$(WOLF_DIR)/wolfssl/wolfcrypt/src/aes.c:
+	@echo "Faltan las dependencias: ejecuta ./third_party/fetch.sh"; exit 1
+
+$(BUILD)/%.o: %.c $(WOLF_DIR)/user_settings.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 $(WOLF_CFLAGS) -c $< -o $@
+
+$(BUILD)/libwolf.a: $(WOLF_OBJ)
+	$(AR) rcs $@ $^
 
 src/webui.h: web/index.html tools/embed.py
 	python3 tools/embed.py $< $@
 
-ps5share-linux: $(SOURCE) src/webui.h $(wildcard src/*.h)
-	$(CC) $(CFLAGS) -o $@ $(SOURCE) -lpthread
+ps5share-linux: $(SOURCE) src/webui.h $(wildcard src/*.h) $(BUILD)/libwolf.a
+	$(CC) $(CFLAGS) -o $@ $(SOURCE) $(BUILD)/libwolf.a -lpthread -lm
 
 clean:
-	rm -f ps5share-linux
+	rm -rf ps5share-linux $(BUILD)
 
 .PHONY: all clean

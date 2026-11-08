@@ -7,6 +7,10 @@ asignes, en **solo lectura** o **lectura y escritura**. Se gestiona desde una
 el propio navegador (explorador de archivos con subida y descarga) o, si lo
 activas, por FTP clásico.
 
+Incluye **carpetas privadas cifradas**: lo que un usuario guarda en ellas solo
+lo puede leer él, ni siquiera el administrador; y una **app para la pantalla de
+inicio** que arranca el servidor y abre el panel en el navegador de la consola.
+
 Está pensado para funcionar junto a **Tailscale para PS5**, de modo que la
 consola sea a la vez el servidor y el punto de acceso VPN, sin necesitar ningún
 PC encendido.
@@ -29,16 +33,31 @@ Törnblom (GPLv3).
 
 | | |
 |---|---|
-| `ps5share.elf` | El payload para la PS5 (web + SFTP, y FTP opcional). |
+| `PPSA27360.zip` | La app **PS5 Share** para la pantalla de inicio (lleva dentro el servidor). |
+| `ps5share.elf` | El payload para la PS5 (web + SFTP, y FTP opcional), por si lo prefieres sin app. |
 | `windows/enviar-payload.ps1` | Envía cualquier `.elf` a la PS5 (puerto 9021). |
 | `windows/instalar-tailscale-ps5.ps1` | Descarga la última versión de Tailscale para PS5 y la envía. |
 | `windows/planB-windows-subnet-router.ps1` | Plan B si Tailscale no funciona en tu firmware: el Windows hace de puente. |
 
 ## Puesta en marcha
 
-### 1. Cargar ps5share en la PS5
+### 1. Instalar la app o cargar el payload
 
-Con el jailbreak y el cargador de ELF (elfldr, puerto 9021) activos:
+**Con la app (recomendado).** Hace falta
+[ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) y un cargador de
+ELF en el puerto 9021 (elfldr). Descomprime `PPSA27360.zip` y copia la carpeta
+`PPSA27360` a `/data/homebrew/` (que quede `/data/homebrew/PPSA27360/eboot.bin`)
+con todos los permisos en `777`. En unos segundos aparece **PS5 Share** en la
+pantalla de inicio. Al abrirla:
+
+1. si el servidor no está en marcha, lo arranca (envía su `ps5share.elf` al
+   cargador);
+2. abre el panel en el navegador de la PS5 (`http://127.0.0.1:8000`), donde
+   inicias sesión con tu usuario;
+3. muestra las direcciones para conectarse. **X** vuelve a abrir el panel y
+   **TRIÁNGULO** reinicia el servidor.
+
+**Solo el payload.** Con el jailbreak y el cargador de ELF activos:
 
 ```powershell
 cd windows
@@ -120,7 +139,9 @@ el FTP de ps5share, donde solo ve sus carpetas.
 ### 5. Que arranque solo
 
 Los payloads se pierden al reiniciar la consola o salir del modo reposo sin
-jailbreak. Añade `tailscale.elf` y `ps5share.elf` a tu cargador automático
+jailbreak. Puedes abrir la app PS5 Share después de cada jailbreak, o añadir
+`tailscale.elf` y `ps5share.elf` (está dentro de la carpeta `assets` de la app)
+a tu cargador automático
 (el autoloader o gestor de payloads que uses) para que se carguen solos tras
 cada jailbreak. La PS5 no atiende conexiones en modo reposo: tiene que estar
 encendida.
@@ -148,6 +169,38 @@ puertos, aunque el usuario tenga contraseña válida.
 Desactivado por defecto porque no cifra nada. Si algún cliente solo habla FTP,
 actívalo en Ajustes: puerto **2121**, modo **pasivo**, puertos pasivos
 50000–50099.
+
+## Carpetas privadas cifradas
+
+En la ficha de un usuario, elige **Privada cifrada** como permiso de una
+carpeta. Desde ese momento:
+
+* Todo lo que ese usuario guarde ahí (nombres de archivos y carpetas incluidos)
+  se escribe cifrado en el disco. El administrador, otros usuarios o
+  cualquiera que lea el disco de la PS5 solo ven nombres sin sentido y datos
+  cifrados.
+* El usuario no tiene que hacer nada distinto: entra por SFTP o por la web con
+  su usuario y contraseña de siempre y lo ve todo normal.
+* La clave sale de **su contraseña**. Por eso:
+  - marca **«Obligarle a cambiarla al iniciar sesión»** al darle una contraseña
+    temporal; así la clave se crea con una contraseña que solo conoce él;
+  - si él cambia su contraseña desde la web, sus archivos siguen accesibles;
+  - si **tú** le pones otra contraseña (porque la olvidó), **lo que tenía
+    cifrado se pierde para siempre**. No hay forma de recuperarlo, por diseño.
+* La carpeta tiene que ser nueva o estar vacía (si no existe se crea sola) y
+  solo puede pertenecer a un usuario.
+* Solo funciona por **SFTP y la web**. El FTP no la muestra.
+* Limitaciones: se ve cuántos archivos hay y su tamaño aproximado; los nombres
+  pueden tener como mucho 140 caracteres; quien controle la consola podría
+  modificar el servidor para capturar contraseñas cuando se usen, así que
+  protege de verdad lo que no sea solo «que no lo vea el admin» con su propia
+  contraseña fuerte y sin compartirla.
+
+Detalles técnicos: clave de datos de 256 bits por usuario, envuelta con
+AES-256-GCM y una clave PBKDF2-SHA256 de su contraseña; contenido en bloques
+de 64 KiB con AES-256-GCM (nonce aleatorio por bloque, clave propia por
+archivo); nombres con SIV (HMAC-SHA256 + AES-256-CTR) en base32, válido
+también en discos exFAT.
 
 ## Seguridad
 
@@ -187,7 +240,18 @@ Después aprueba la ruta en la consola de Tailscale. Desde fuera usarás
 `http://192.168.100.208:8000` y SFTP a `192.168.100.208`, puerto 2222. El Windows tiene
 que estar encendido (y sin suspenderse).
 
-## Compilar
+## Compilar la app
+
+La app nativa está en `app/` (basada en
+[ps5-native-app-boilerplate](https://github.com/drakmor/ps5-native-app-boilerplate),
+GPL-3.0-or-later). Requiere clang-18 y lld-18:
+
+```sh
+export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+./tools/build-app.sh            # payload + app → dist/PPSA27360.zip (permisos 777)
+```
+
+## Compilar el payload
 
 Con el [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) en Linux o WSL:
 
@@ -201,7 +265,7 @@ make -f Makefile.ps5 test PS5_HOST=192.168.100.208   # compila y envía
 Para probar en Linux sin consola:
 
 ```sh
-./test/run_tests.sh             # compila la versión Linux y pasa ~100 pruebas
+./test/run_tests.sh             # compila la versión Linux y pasa ~135 pruebas
 ./ps5share-linux -d ./datos     # web en :8000, SFTP en :2222
 ```
 
@@ -212,6 +276,8 @@ Para probar en Linux sin consola:
 | `src/config.c` | `users.conf`, usuarios, contraseñas (PBKDF2), ajustes |
 | `src/vfs.c` | Carpetas virtuales por usuario y bloqueo de escapes |
 | `src/sftp.c` | Servidor SFTP v3 sobre wolfSSH, con el mismo VFS y permisos |
+| `src/crypt.c` | Carpetas privadas: claves, nombres y contenido cifrados |
+| `app/` | App de la pantalla de inicio (eboot.bin) |
 | `src/ftp.c` | Servidor FTP (derivado de ftpsrv) con login y permisos |
 | `third_party/` | Configuración de wolfSSL/wolfSSH y script de descarga |
 | `src/http.c` | Servidor web y API JSON |
@@ -236,6 +302,8 @@ set	ftp_enabled	0
 user	ana	<sal>	<hash>	1	1	1	0
 mount	ana	rw	Fotos	/mnt/ext0/Fotos
 mount	ana	ro	Películas	/mnt/usb0/Peliculas
+mount	ana	enc	Privado	/mnt/ext0/privado/ana
+ukey	ana	<sal>	<clave de datos envuelta>
 ```
 
 Si olvidas la contraseña del administrador: carga el ftpsrv original, borra

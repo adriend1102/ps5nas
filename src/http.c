@@ -29,6 +29,10 @@
 
 #include "config.h"
 #include "http.h"
+#include "notify.h"
+#include "sha256.h"
+#include "smtp.h"
+#include "tsip.h"
 #include "sftp.h"
 #include "io.h"
 #include "log.h"
@@ -41,6 +45,7 @@
 #define HTTP_TIMEOUT       60
 #define SESSION_MAX        256
 #define SESSION_TTL        (12 * 3600)
+#define SESSION_TTL_LONG   (180 * 24 * 3600)   /* «recordar sesión en este dispositivo» */
 #define RL_SLOTS           64
 #define RL_WINDOW          600
 #define RL_MAX_FAILS       10
@@ -399,9 +404,10 @@ send_errno(req_t *r) {
 /* ------------------------------------------------------------------ */
 
 typedef struct session {
-  char   token[65];
+  char   thash[65];    /* SHA-256 del token (el token solo lo tiene el navegador) */
   char   user[CFG_NAME_MAX+1];
   time_t expires;
+  int    persist;      /* se guarda en disco y sobrevive a reinicios */
   ukey_t key;          /* clave de sus carpetas cifradas (solo en memoria) */
 } session_t;
 
@@ -410,7 +416,73 @@ static pthread_mutex_t g_sess_lock = PTHREAD_MUTEX_INITIALIZER;
 
 
 static void
-session_create(const char *user, const ukey_t *key, char *token_out) {
+token_hash(const char *token, char out[65]) {
+  static const char hx[] = "0123456789abcdef";
+  uint8_t d[32];
+  SHA256_CTX c;
+  sha256_init(&c);
+  sha256_update(&c, (const uint8_t*)token, strlen(token));
+  sha256_final(&c, d);
+  for(int i=0; i<32; i++) {
+    out[i*2] = hx[d[i] >> 4];
+    out[i*2+1] = hx[d[i] & 15];
+  }
+  out[64] = 0;
+}
+
+
+/* Guarda las sesiones recordadas (con el lock de sesiones tomado). */
+static void
+sessions_save_locked(void) {
+  char path[PATH_MAX], tmp[PATH_MAX + 8];
+  time_t now = time(NULL);
+  snprintf(path, sizeof(path), "%s/sessions.conf", cfg_dir());
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  FILE *f = fopen(tmp, "w");
+  if(!f) return;
+  fprintf(f, "# Sesiones web recordadas (hash del token, usuario, caducidad)\n");
+  for(int i=0; i<SESSION_MAX; i++) {
+    if(g_sess[i].persist && g_sess[i].expires > now) {
+      fprintf(f, "%s\t%s\t%lld\n", g_sess[i].thash, g_sess[i].user,
+              (long long)g_sess[i].expires);
+    }
+  }
+  fclose(f);
+  rename(tmp, path);
+  chmod(path, 0600);
+}
+
+
+static void
+sessions_load(void) {
+  char path[PATH_MAX], line[256];
+  time_t now = time(NULL);
+  int n = 0;
+  snprintf(path, sizeof(path), "%s/sessions.conf", cfg_dir());
+  FILE *f = fopen(path, "r");
+  if(!f) return;
+  pthread_mutex_lock(&g_sess_lock);
+  while(n < SESSION_MAX && fgets(line, sizeof(line), f)) {
+    char th[65], user[CFG_NAME_MAX+1];
+    long long exp;
+    if(line[0] == '#') continue;
+    if(sscanf(line, "%64[0-9a-f]\t%48[^\t]\t%lld", th, user, &exp) != 3) continue;
+    if(strlen(th) != 64 || exp <= now) continue;
+    session_t *se = &g_sess[n++];
+    memset(se, 0, sizeof(*se));
+    memcpy(se->thash, th, sizeof(se->thash));
+    snprintf(se->user, sizeof(se->user), "%s", user);
+    se->expires = (time_t)exp;
+    se->persist = 1;
+  }
+  pthread_mutex_unlock(&g_sess_lock);
+  fclose(f);
+  if(n) LOG_PRINTF("ps5share: %d sesión(es) recordada(s)\n", n);
+}
+
+
+static void
+session_create(const char *user, const ukey_t *key, int persist, char *token_out) {
   time_t now = time(NULL);
   int slot = 0;
 
@@ -420,11 +492,14 @@ session_create(const char *user, const ukey_t *key, char *token_out) {
     if(g_sess[i].expires < now) { slot = i; break; }
     if(g_sess[i].expires < g_sess[slot].expires) slot = i;
   }
-  snprintf(g_sess[slot].token, sizeof(g_sess[slot].token), "%s", token_out);
+  int was_persist = g_sess[slot].persist;
+  memset(&g_sess[slot], 0, sizeof(g_sess[slot]));
+  token_hash(token_out, g_sess[slot].thash);
   snprintf(g_sess[slot].user, sizeof(g_sess[slot].user), "%s", user);
-  g_sess[slot].expires = now + SESSION_TTL;
+  g_sess[slot].expires = now + (persist ? SESSION_TTL_LONG : SESSION_TTL);
+  g_sess[slot].persist = persist;
   if(key) memcpy(&g_sess[slot].key, key, sizeof(*key));
-  else memset(&g_sess[slot].key, 0, sizeof(g_sess[slot].key));
+  if(persist || was_persist) sessions_save_locked();
   pthread_mutex_unlock(&g_sess_lock);
 }
 
@@ -432,27 +507,49 @@ session_create(const char *user, const ukey_t *key, char *token_out) {
 static int
 session_lookup(const char *token, char *user_out, ukey_t *key_out) {
   time_t now = time(NULL);
-  int r = -1;
+  char th[65];
+  int r = -1, idx = -1;
   if(strlen(token) != 64) return -1;
+  token_hash(token, th);
   pthread_mutex_lock(&g_sess_lock);
   for(int i=0; i<SESSION_MAX; i++) {
-    if(g_sess[i].expires >= now && cfg_consttime_eq(g_sess[i].token, token)) {
+    if(g_sess[i].expires >= now && cfg_consttime_eq(g_sess[i].thash, th)) {
       snprintf(user_out, CFG_NAME_MAX + 1, "%s", g_sess[i].user);
       memcpy(key_out, &g_sess[i].key, sizeof(*key_out));
+      idx = i;
       r = 0;
       break;
     }
   }
   pthread_mutex_unlock(&g_sess_lock);
+
+  /* Sesión sin clave (recordada tras un reinicio, o carpeta privada nueva):
+     se abre con la contraseña guardada. */
+  if(!r && !key_out->ok) {
+    user_t u;
+    if(!cfg_get_user(user_out, &u) && cfg_user_has_enc(&u)) {
+      cfg_unlock_key_stored(user_out, key_out);
+      if(key_out->ok) {
+        pthread_mutex_lock(&g_sess_lock);
+        if(cfg_consttime_eq(g_sess[idx].thash, th)) {
+          memcpy(&g_sess[idx].key, key_out, sizeof(*key_out));
+        }
+        pthread_mutex_unlock(&g_sess_lock);
+      }
+    }
+    memset(&u, 0, sizeof(u));
+  }
   return r;
 }
 
 
 static void
 session_set_key(const char *token, const ukey_t *key) {
+  char th[65];
+  token_hash(token, th);
   pthread_mutex_lock(&g_sess_lock);
   for(int i=0; i<SESSION_MAX; i++) {
-    if(g_sess[i].token[0] && cfg_consttime_eq(g_sess[i].token, token)) {
+    if(g_sess[i].thash[0] && cfg_consttime_eq(g_sess[i].thash, th)) {
       memcpy(&g_sess[i].key, key, sizeof(*key));
     }
   }
@@ -462,22 +559,37 @@ session_set_key(const char *token, const ukey_t *key) {
 
 static void
 session_destroy(const char *token) {
+  char th[65];
+  int changed = 0;
+  token_hash(token, th);
   pthread_mutex_lock(&g_sess_lock);
   for(int i=0; i<SESSION_MAX; i++) {
-    if(g_sess[i].token[0] && cfg_consttime_eq(g_sess[i].token, token)) {
+    if(g_sess[i].thash[0] && cfg_consttime_eq(g_sess[i].thash, th)) {
+      changed |= g_sess[i].persist;
+      crypt_key_wipe(&g_sess[i].key);
       memset(&g_sess[i], 0, sizeof(g_sess[i]));
     }
   }
+  if(changed) sessions_save_locked();
   pthread_mutex_unlock(&g_sess_lock);
 }
 
 
+/* Cierra todas las sesiones de USER salvo la de KEEP_TOKEN (puede ser NULL). */
 static void
-session_destroy_user(const char *user) {
+session_destroy_user(const char *user, const char *keep_token) {
+  char keep[65] = "";
+  int changed = 0;
+  if(keep_token && keep_token[0]) token_hash(keep_token, keep);
   pthread_mutex_lock(&g_sess_lock);
   for(int i=0; i<SESSION_MAX; i++) {
-    if(!strcmp(g_sess[i].user, user)) memset(&g_sess[i], 0, sizeof(g_sess[i]));
+    if(!strcmp(g_sess[i].user, user) && !(keep[0] && !strcmp(g_sess[i].thash, keep))) {
+      changed |= g_sess[i].persist;
+      crypt_key_wipe(&g_sess[i].key);
+      memset(&g_sess[i], 0, sizeof(g_sess[i]));
+    }
   }
+  if(changed) sessions_save_locked();
   pthread_mutex_unlock(&g_sess_lock);
 }
 
@@ -538,15 +650,21 @@ rl_clear(uint32_t ip) {
 
 
 static int
-login_reply(req_t *r, const char *user, const ukey_t *key) {
+login_reply(req_t *r, const char *user, const ukey_t *key, int remember) {
   char token[65];
   char cookie[256];
   sb_t b = {0};
 
-  session_create(user, key, token);
-  snprintf(cookie, sizeof(cookie),
-           "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d\r\n",
-           token, SESSION_TTL);
+  session_create(user, key, remember, token);
+  if(remember) {
+    snprintf(cookie, sizeof(cookie),
+             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d\r\n",
+             token, SESSION_TTL_LONG);
+  } else {
+    /* Cookie de sesión: se borra al cerrar el navegador. */
+    snprintf(cookie, sizeof(cookie),
+             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict\r\n", token);
+  }
   sb_puts(&b, "{\"ok\":true}");
   return send_json(r, 200, &b, cookie);
 }
@@ -559,11 +677,22 @@ login_reply(req_t *r, const char *user, const ukey_t *key) {
 static int
 h_status(req_t *r) {
   sb_t b = {0};
+  char ts[INET_ADDRSTRLEN] = "";
   cfg_lock();
   int setup = cfg_nusers() == 0;
+  settings_t *st = cfg_settings();
+  int rec_mail = st->recover_email && st->smtp_user[0] && st->smtp_passenc[0];
+  int rec_admin = st->recover_admin;
+  uint16_t sftp_port = st->sftp_enabled ? st->sftp_port : 0;
   cfg_unlock();
-  sb_printf(&b, "{\"setup\":%s,\"version\":", setup ? "true" : "false");
+  tsip_get(ts, sizeof(ts));
+  sb_printf(&b, "{\"name\":\"PS5NAS\",\"setup\":%s,\"recover_email\":%s,"
+            "\"recover_admin\":%s,\"sftp_port\":%u,\"version\":",
+            setup ? "true" : "false", rec_mail ? "true" : "false",
+            rec_admin ? "true" : "false", sftp_port);
   sb_json_str(&b, VERSION_TAG);
+  sb_puts(&b, ",\"tailscale_ip\":");
+  sb_json_str(&b, ts);
   sb_puts(&b, "}");
   return send_json(r, 200, &b, NULL);
 }
@@ -591,13 +720,13 @@ h_setup(req_t *r) {
   if(!pass[0]) return send_err(r, 400, "Falta la contraseña");
   if(cfg_upsert_user(&u, pass, err, sizeof(err))) return send_err(r, 400, err);
   LOG_PRINTF("ps5share: administrador inicial '%s' creado\n", user);
-  return login_reply(r, user, NULL);
+  return login_reply(r, user, NULL, 0);
 }
 
 
 static int
 h_login(req_t *r) {
-  char user[CFG_NAME_MAX+1], pass[256];
+  char user[CFG_NAME_MAX+1], pass[256], rem[8];
   uint32_t ip = r->peer.sin_addr.s_addr;
 
   if(rl_blocked(ip)) {
@@ -606,6 +735,7 @@ h_login(req_t *r) {
   if(read_body(r)) return send_err(r, 400, "Petición no válida");
   get_param(r->body, "user", user, sizeof(user));
   get_param(r->body, "pass", pass, sizeof(pass));
+  get_param(r->body, "remember", rem, sizeof(rem));
 
   if(cfg_authenticate(user, pass, NULL)) {
     rl_fail(ip);
@@ -616,7 +746,7 @@ h_login(req_t *r) {
   ukey_t key;
   cfg_unlock_key(user, pass, &key);
   memset(pass, 0, sizeof(pass));
-  int ret = login_reply(r, user, &key);
+  int ret = login_reply(r, user, &key, !strcmp(rem, "1"));
   crypt_key_wipe(&key);
   return ret;
 }
@@ -637,6 +767,8 @@ h_me(req_t *r) {
   sb_t b = {0};
   sb_puts(&b, "{\"user\":");
   sb_json_str(&b, r->user.name);
+  sb_puts(&b, ",\"email\":");
+  sb_json_str(&b, r->user.email);
   sb_printf(&b, ",\"admin\":%s,\"can_chpass\":%s,\"must_chpass\":%s,\"mounts\":[",
             r->user.admin ? "true" : "false",
             (r->user.can_chpass || r->user.must_chpass) ? "true" : "false",
@@ -657,11 +789,16 @@ h_me(req_t *r) {
 
 static int
 h_me_password(req_t *r) {
-  char oldp[256], newp[256], err[256];
+  char oldp[256], newp[256], err[256], email[CFG_EMAIL_MAX + 2];
   if(read_body(r)) return send_err(r, 400, "Petición no válida");
   get_param(r->body, "old", oldp, sizeof(oldp));
   get_param(r->body, "new", newp, sizeof(newp));
+  int set_email = !get_param(r->body, "email", email, sizeof(email));
+  if(set_email && email[0] && !cfg_valid_email(email)) {
+    return send_err(r, 400, "El correo de recuperación no es válido");
+  }
   int ret = cfg_change_own_password(r->user.name, oldp, newp, err, sizeof(err));
+  if(!ret && set_email) cfg_set_email(r->user.name, email, err, sizeof(err));
   if(!ret && !r->key.ok) {
     /* Tras el primer cambio ya puede abrir (o crear) su clave. */
     ukey_t key;
@@ -674,6 +811,235 @@ h_me_password(req_t *r) {
   if(ret) return send_err(r, 400, err);
   LOG_PRINTF("ps5share: '%s' cambió su contraseña\n", r->user.name);
   return send_ok(r);
+}
+
+
+static int
+h_me_email(req_t *r) {
+  char pass[256], email[CFG_EMAIL_MAX + 2], err[256];
+  uint32_t ip = r->peer.sin_addr.s_addr;
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(rl_blocked(ip)) return send_err(r, 429, "Demasiados intentos. Espera unos minutos.");
+  get_param(r->body, "pass", pass, sizeof(pass));
+  get_param(r->body, "email", email, sizeof(email));
+  if(cfg_authenticate(r->user.name, pass, NULL)) {
+    rl_fail(ip);
+    memset(pass, 0, sizeof(pass));
+    return send_err(r, 403, "La contraseña no es correcta");
+  }
+  memset(pass, 0, sizeof(pass));
+  if(cfg_set_email(r->user.name, email, err, sizeof(err))) return send_err(r, 400, err);
+  return send_ok(r);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Recuperación de contraseña                                          */
+/* ------------------------------------------------------------------ */
+
+#define RECOV_MAX      32
+#define RECOV_TTL      (24 * 3600)
+#define RECOV_COOLDOWN 120     /* segundos entre correos al mismo usuario */
+
+typedef struct recov {
+  char     id[17];               /* identificador para el administrador */
+  char     thash[65];            /* hash del token que guarda el navegador */
+  char     user[CFG_NAME_MAX+1];
+  char     ip[INET_ADDRSTRLEN];
+  time_t   created;
+  int      state;                /* 0 pendiente, 1 aceptada, 2 rechazada */
+} recov_t;
+
+static recov_t g_recov[RECOV_MAX];
+static struct { char user[CFG_NAME_MAX+1]; time_t when; } g_mailed[RECOV_MAX];
+static pthread_mutex_t g_recov_lock = PTHREAD_MUTEX_INITIALIZER;
+
+
+typedef struct mailjob {
+  char to[CFG_EMAIL_MAX+1];
+  char user[CFG_NAME_MAX+1];
+  char pass[CRYPT_SEAL_MAX+1];
+} mailjob_t;
+
+
+static void*
+mail_thread(void *p) {
+  mailjob_t *j = p;
+  char body[1024], err[256];
+  snprintf(body, sizeof(body),
+           "Hola, %s:\n\n"
+           "Alguien (seguramente tú) ha pedido recuperar la contraseña de tu cuenta de PS5NAS.\n\n"
+           "Usuario: %s\n"
+           "Contraseña: %s\n\n"
+           "Úsala para entrar por SFTP o desde la web. Si puedes, cámbiala después desde la web "
+           "(botón «Mi cuenta»).\n\n"
+           "Si no lo has pedido tú, avisa al administrador de la consola.\n\n"
+           "-- PS5NAS\n", j->user, j->user, j->pass);
+  if(!smtp_send(j->to, "PS5NAS: tu contraseña", body, err, sizeof(err))) {
+    LOG_PRINTF("ps5share: enviado el correo de recuperación de '%s'\n", j->user);
+  }
+  memset(body, 0, sizeof(body));
+  memset(j, 0, sizeof(*j));
+  free(j);
+  return NULL;
+}
+
+
+static int
+h_forgot_email(req_t *r) {
+  char user[CFG_NAME_MAX+1], email[CFG_EMAIL_MAX + 2];
+  uint32_t ip = r->peer.sin_addr.s_addr;
+  user_t u;
+  int recover;
+
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(rl_blocked(ip)) return send_err(r, 429, "Demasiados intentos. Espera unos minutos.");
+  get_param(r->body, "user", user, sizeof(user));
+  get_param(r->body, "email", email, sizeof(email));
+  cfg_lock();
+  recover = cfg_settings()->recover_email;
+  cfg_unlock();
+  if(!recover) return send_err(r, 403, "La recuperación por correo está desactivada");
+  rl_fail(ip);    /* cuenta como intento: limita los envíos por IP */
+
+  if(!cfg_get_user(user, &u) && u.enabled && u.email[0] && !strcasecmp(u.email, email)) {
+    time_t now = time(NULL);
+    int slot = 0, recent = 0;
+    pthread_mutex_lock(&g_recov_lock);
+    for(int i=0; i<RECOV_MAX; i++) {
+      if(!strcmp(g_mailed[i].user, user)) {
+        slot = i;
+        recent = now - g_mailed[i].when < RECOV_COOLDOWN;
+        break;
+      }
+      if(g_mailed[i].when < g_mailed[slot].when) slot = i;
+    }
+    if(!recent) {
+      snprintf(g_mailed[slot].user, sizeof(g_mailed[slot].user), "%s", user);
+      g_mailed[slot].when = now;
+    }
+    pthread_mutex_unlock(&g_recov_lock);
+
+    mailjob_t *j = recent ? NULL : calloc(1, sizeof(*j));
+    if(j && !cfg_get_password(user, j->pass, sizeof(j->pass))) {
+      snprintf(j->to, sizeof(j->to), "%s", u.email);
+      snprintf(j->user, sizeof(j->user), "%s", u.name);
+      pthread_t t;
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+      pthread_attr_setstacksize(&attr, 512 * 1024);
+      if(pthread_create(&t, &attr, mail_thread, j)) free(j);
+      pthread_attr_destroy(&attr);
+    } else if(j) {
+      LOG_PRINTF("ps5share: '%s' pidió su contraseña, pero aún no se conoce\n", user);
+      free(j);
+    }
+  }
+  memset(&u, 0, sizeof(u));
+  /* Misma respuesta siempre: no revela qué usuarios o correos existen. */
+  sb_t b = {0};
+  sb_puts(&b, "{\"ok\":true}");
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_forgot_request(req_t *r) {
+  char user[CFG_NAME_MAX+1], token[65];
+  uint32_t ip = r->peer.sin_addr.s_addr;
+  int recover;
+  time_t now = time(NULL);
+
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(rl_blocked(ip)) return send_err(r, 429, "Demasiadas solicitudes. Espera unos minutos.");
+  get_param(r->body, "user", user, sizeof(user));
+  cfg_lock();
+  recover = cfg_settings()->recover_admin;
+  cfg_unlock();
+  if(!recover) return send_err(r, 403, "Pedir la contraseña al administrador está desactivado");
+  if(!cfg_valid_username(user)) return send_err(r, 400, "Usuario no válido");
+  rl_fail(ip);
+
+  cfg_random_hex(token, 32);
+  pthread_mutex_lock(&g_recov_lock);
+  int slot = -1, oldest = 0;
+  for(int i=0; i<RECOV_MAX; i++) {
+    /* Una solicitud pendiente por usuario: la nueva sustituye a la anterior. */
+    if(g_recov[i].created && !strcmp(g_recov[i].user, user) && g_recov[i].state == 0) {
+      slot = i;
+      break;
+    }
+    if(!g_recov[i].created || now - g_recov[i].created > RECOV_TTL) {
+      if(slot < 0) slot = i;
+    }
+    if(g_recov[i].created < g_recov[oldest].created) oldest = i;
+  }
+  if(slot < 0) slot = oldest;
+  recov_t *q = &g_recov[slot];
+  memset(q, 0, sizeof(*q));
+  cfg_random_hex(q->id, 8);
+  token_hash(token, q->thash);
+  snprintf(q->user, sizeof(q->user), "%s", user);
+  inet_ntop(AF_INET, &r->peer.sin_addr, q->ip, sizeof(q->ip));
+  q->created = now;
+  pthread_mutex_unlock(&g_recov_lock);
+
+  user_t u;
+  if(!cfg_get_user(user, &u)) {
+    notify("PS5NAS: %s pide recuperar su contraseña. Acéptalo en Usuarios.", user);
+    LOG_PRINTF("ps5share: '%s' pide recuperar su contraseña (desde %s)\n", user, q->ip);
+  }
+  memset(&u, 0, sizeof(u));
+
+  sb_t b = {0};
+  sb_puts(&b, "{\"token\":");
+  sb_json_str(&b, token);
+  sb_puts(&b, "}");
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_forgot_status(req_t *r) {
+  char token[80], th[65], user[CFG_NAME_MAX+1] = "";
+  int state = -1;
+  time_t now = time(NULL);
+
+  get_param(r->query, "token", token, sizeof(token));
+  if(strlen(token) != 64) return send_err(r, 400, "Solicitud no válida");
+  token_hash(token, th);
+  pthread_mutex_lock(&g_recov_lock);
+  for(int i=0; i<RECOV_MAX; i++) {
+    recov_t *q = &g_recov[i];
+    if(q->created && now - q->created <= RECOV_TTL && cfg_consttime_eq(q->thash, th)) {
+      state = q->state;
+      snprintf(user, sizeof(user), "%s", q->user);
+      if(state != 0) memset(q, 0, sizeof(*q));   /* la respuesta se entrega una vez */
+      break;
+    }
+  }
+  pthread_mutex_unlock(&g_recov_lock);
+
+  sb_t b = {0};
+  if(state == 1) {
+    char pass[CRYPT_SEAL_MAX + 1];
+    if(cfg_get_password(user, pass, sizeof(pass))) {
+      sb_puts(&b, "{\"state\":\"denied\"}");
+    } else {
+      sb_puts(&b, "{\"state\":\"approved\",\"user\":");
+      sb_json_str(&b, user);
+      sb_puts(&b, ",\"password\":");
+      sb_json_str(&b, pass);
+      sb_puts(&b, "}");
+    }
+    memset(pass, 0, sizeof(pass));
+  } else {
+    sb_puts(&b, state == 0 ? "{\"state\":\"pending\"}" :
+                state == 2 ? "{\"state\":\"denied\"}" : "{\"state\":\"unknown\"}");
+  }
+  int ret = send_json(r, 200, &b, NULL);
+  return ret;
 }
 
 
@@ -1026,11 +1392,13 @@ h_admin_users(req_t *r) {
     if(i) sb_puts(&b, ",");
     sb_puts(&b, "{\"name\":");
     sb_json_str(&b, u->name);
+    sb_puts(&b, ",\"email\":");
+    sb_json_str(&b, u->email);
     sb_printf(&b, ",\"admin\":%s,\"enabled\":%s,\"can_chpass\":%s,\"must_chpass\":%s,"
-              "\"has_key\":%s,\"mounts\":[",
+              "\"has_key\":%s,\"pw_known\":%s,\"mounts\":[",
               u->admin ? "true" : "false", u->enabled ? "true" : "false",
               u->can_chpass ? "true" : "false", u->must_chpass ? "true" : "false",
-              u->kwrap[0] ? "true" : "false");
+              u->kwrap[0] ? "true" : "false", u->pwenc[0] ? "true" : "false");
     for(int j=0; j<u->nmounts; j++) {
       if(j) sb_puts(&b, ",");
       sb_puts(&b, "{\"name\":");
@@ -1109,6 +1477,12 @@ h_admin_user_save(req_t *r) {
   u.can_chpass = !strcmp(tmp, "1");
   get_param(r->body, "must_chpass", tmp, sizeof(tmp));
   u.must_chpass = !strcmp(tmp, "1");
+  {
+    char em[CFG_EMAIL_MAX + 2];
+    get_param(r->body, "email", em, sizeof(em));
+    if(strlen(em) > CFG_EMAIL_MAX) return send_err(r, 400, "Correo demasiado largo");
+    memcpy(u.email, em, strlen(em) + 1);
+  }
 
   if(!(mounts = malloc(HTTP_BODY_MAX))) return send_err(r, 500, "Sin memoria");
   get_param(r->body, "mounts", mounts, HTTP_BODY_MAX);
@@ -1121,7 +1495,7 @@ h_admin_user_save(req_t *r) {
   }
   if(cfg_upsert_user(&u, pass, err, sizeof(err))) return send_err(r, 400, err);
   /* Desactivado o con contraseña nueva: sus sesiones dejan de valer. */
-  if(!u.enabled || pass[0]) session_destroy_user(u.name);
+  if(!u.enabled || pass[0]) session_destroy_user(u.name, NULL);
   LOG_PRINTF("ps5share: '%s' guardó el usuario '%s'\n", r->user.name, u.name);
   return send_ok(r);
 }
@@ -1134,8 +1508,116 @@ h_admin_user_delete(req_t *r) {
   get_param(r->body, "name", name, sizeof(name));
   if(!strcmp(name, r->user.name)) return send_err(r, 400, "No puedes borrarte a ti mismo");
   if(cfg_delete_user(name, err, sizeof(err))) return send_err(r, 400, err);
-  session_destroy_user(name);
+  session_destroy_user(name, NULL);
   LOG_PRINTF("ps5share: '%s' borró el usuario '%s'\n", r->user.name, name);
+  return send_ok(r);
+}
+
+
+/* Muestra la contraseña de un usuario (ojo del panel de administración). */
+static int
+h_admin_user_password(req_t *r) {
+  char name[CFG_NAME_MAX+1], pass[CRYPT_SEAL_MAX + 1];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "name", name, sizeof(name));
+  if(cfg_get_password(name, pass, sizeof(pass))) {
+    return send_err(r, 404, "Aún no se conoce: se guardará la próxima vez que inicie sesión "
+                    "(o ponle tú una nueva)");
+  }
+  sb_t b = {0};
+  sb_puts(&b, "{\"password\":");
+  sb_json_str(&b, pass);
+  sb_puts(&b, "}");
+  memset(pass, 0, sizeof(pass));
+  LOG_PRINTF("ps5share: '%s' consultó la contraseña de '%s'\n", r->user.name, name);
+  int ret = send_json(r, 200, &b, NULL);
+  return ret;
+}
+
+
+static int
+h_admin_requests(req_t *r) {
+  sb_t b = {0};
+  time_t now = time(NULL);
+  int first = 1;
+  sb_puts(&b, "{\"requests\":[");
+  pthread_mutex_lock(&g_recov_lock);
+  for(int i=0; i<RECOV_MAX; i++) {
+    recov_t *q = &g_recov[i];
+    if(!q->created || q->state != 0 || now - q->created > RECOV_TTL) continue;
+    user_t u;
+    if(cfg_get_user(q->user, &u)) continue;    /* usuarios que no existen: se ignoran */
+    if(!first) sb_puts(&b, ",");
+    first = 0;
+    sb_puts(&b, "{\"id\":");
+    sb_json_str(&b, q->id);
+    sb_puts(&b, ",\"user\":");
+    sb_json_str(&b, q->user);
+    sb_puts(&b, ",\"ip\":");
+    sb_json_str(&b, q->ip);
+    sb_printf(&b, ",\"created\":%lld,\"pw_known\":%s}", (long long)q->created,
+              u.pwenc[0] ? "true" : "false");
+    memset(&u, 0, sizeof(u));
+  }
+  pthread_mutex_unlock(&g_recov_lock);
+  sb_puts(&b, "]}");
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_admin_request_decide(req_t *r) {
+  char id[32], action[16], user[CFG_NAME_MAX+1] = "";
+  int found = 0;
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "id", id, sizeof(id));
+  get_param(r->body, "action", action, sizeof(action));
+  int approve = !strcmp(action, "approve");
+  if(!approve && strcmp(action, "deny")) return send_err(r, 400, "Acción no válida");
+
+  pthread_mutex_lock(&g_recov_lock);
+  for(int i=0; i<RECOV_MAX; i++) {
+    recov_t *q = &g_recov[i];
+    if(q->created && q->state == 0 && !strcmp(q->id, id)) {
+      snprintf(user, sizeof(user), "%s", q->user);
+      found = 1;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&g_recov_lock);
+  if(!found) return send_err(r, 404, "La solicitud ya no existe");
+
+  if(approve) {
+    char pass[CRYPT_SEAL_MAX + 1];
+    int known = !cfg_get_password(user, pass, sizeof(pass));
+    memset(pass, 0, sizeof(pass));
+    if(!known) {
+      return send_err(r, 409, "No se conoce su contraseña: ponle una nueva en su ficha y "
+                      "vuelve a aceptar la solicitud");
+    }
+  }
+  pthread_mutex_lock(&g_recov_lock);
+  for(int i=0; i<RECOV_MAX; i++) {
+    if(g_recov[i].created && !strcmp(g_recov[i].id, id)) g_recov[i].state = approve ? 1 : 2;
+  }
+  pthread_mutex_unlock(&g_recov_lock);
+  LOG_PRINTF("ps5share: '%s' %s la recuperación de '%s'\n", r->user.name,
+             approve ? "aceptó" : "rechazó", user);
+  return send_ok(r);
+}
+
+
+static int
+h_admin_mail_test(req_t *r) {
+  char to[CFG_EMAIL_MAX + 2], err[512];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "to", to, sizeof(to));
+  if(smtp_send(to, "PS5NAS: correo de prueba",
+               "Este es un correo de prueba de PS5NAS.\n\n"
+               "Si lo has recibido, los usuarios ya pueden recuperar su contraseña "
+               "con «¿Olvidaste tu contraseña?».\n", err, sizeof(err))) {
+    return send_err(r, 400, err);
+  }
   return send_ok(r);
 }
 
@@ -1191,6 +1673,21 @@ h_admin_settings_get(req_t *r) {
             s.sftp_port,
             s.sftp_enabled ? "true" : "false", s.ftp_enabled ? "true" : "false");
   sb_json_str(&b, s.pasv_address);
+  sb_puts(&b, ",\"smtp_host\":");
+  sb_json_str(&b, s.smtp_host);
+  sb_puts(&b, ",\"smtp_user\":");
+  sb_json_str(&b, s.smtp_user);
+  sb_puts(&b, ",\"smtp_from_name\":");
+  sb_json_str(&b, s.smtp_from_name);
+  sb_printf(&b, ",\"smtp_port\":%u,\"smtp_pass_set\":%s,\"recover_email\":%s,"
+            "\"recover_admin\":%s", s.smtp_port, s.smtp_passenc[0] ? "true" : "false",
+            s.recover_email ? "true" : "false", s.recover_admin ? "true" : "false");
+  {
+    char ts[INET_ADDRSTRLEN] = "";
+    tsip_get(ts, sizeof(ts));
+    sb_puts(&b, ",\"tailscale_ip\":");
+    sb_json_str(&b, ts);
+  }
   sb_puts(&b, ",\"fp_ecdsa\":");
   sb_json_str(&b, sftp_fingerprint_ecdsa());
   sb_puts(&b, ",\"fp_rsa\":");
@@ -1237,6 +1734,39 @@ h_admin_settings_set(req_t *r) {
     if(strlen(v) >= sizeof(s.pasv_address)) return send_err(r, 400, "IP demasiado larga");
     memcpy(s.pasv_address, v, strlen(v) + 1);
   }
+  if(!get_param(r->body, "smtp_host", v, sizeof(v))) {
+    if(strlen(v) >= sizeof(s.smtp_host)) return send_err(r, 400, "Servidor de correo demasiado largo");
+    memcpy(s.smtp_host, v, strlen(v) + 1);
+  }
+  if(!get_param(r->body, "smtp_port", v, sizeof(v))) s.smtp_port = (uint16_t)atoi(v);
+  if(!get_param(r->body, "smtp_user", v, sizeof(v))) {
+    if(strlen(v) >= sizeof(s.smtp_user)) return send_err(r, 400, "Cuenta de correo demasiado larga");
+    memcpy(s.smtp_user, v, strlen(v) + 1);
+  }
+  if(!get_param(r->body, "smtp_from_name", v, sizeof(v))) {
+    if(strlen(v) >= sizeof(s.smtp_from_name)) return send_err(r, 400, "Nombre del remitente demasiado largo");
+    memcpy(s.smtp_from_name, v, strlen(v) + 1);
+  }
+  if(!get_param(r->body, "recover_email", v, sizeof(v))) s.recover_email = !strcmp(v, "1");
+  if(!get_param(r->body, "recover_admin", v, sizeof(v))) s.recover_admin = !strcmp(v, "1");
+  {
+    char sp[256];
+    /* Contraseña SMTP: solo se cambia si se escribe una (o se pide borrarla). */
+    if(!get_param(r->body, "smtp_pass", sp, sizeof(sp)) && sp[0]) {
+      char nospace[256];
+      size_t o = 0;
+      for(char *c = sp; *c && o + 1 < sizeof(nospace); c++) {
+        if(*c != ' ') nospace[o++] = *c;   /* Google la muestra en grupos de 4 */
+      }
+      nospace[o] = 0;
+      if(cfg_set_smtp_password(&s, nospace)) return send_err(r, 400, "Contraseña de correo no válida");
+      memset(nospace, 0, sizeof(nospace));
+    }
+    if(!get_param(r->body, "smtp_pass_clear", sp, sizeof(sp)) && !strcmp(sp, "1")) {
+      s.smtp_passenc[0] = 0;
+    }
+    memset(sp, 0, sizeof(sp));
+  }
   if(cfg_update_settings(&s, err, sizeof(err))) return send_err(r, 400, err);
   return send_ok(r);
 }
@@ -1263,6 +1793,10 @@ static const route_t routes[] = {
   {"POST", "/api/logout",               h_logout,              0},
   {"GET",  "/api/me",                   h_me,                  1},
   {"POST", "/api/me/password",          h_me_password,         1},
+  {"POST", "/api/me/email",             h_me_email,            1},
+  {"POST", "/api/forgot/email",         h_forgot_email,        0},
+  {"POST", "/api/forgot/request",       h_forgot_request,      0},
+  {"GET",  "/api/forgot/status",        h_forgot_status,       0},
   {"GET",  "/api/fs/list",              h_fs_list,             1},
   {"GET",  "/api/fs/get",               h_fs_get,              1},
   {"HEAD", "/api/fs/get",               h_fs_get,              1},
@@ -1273,6 +1807,10 @@ static const route_t routes[] = {
   {"GET",  "/api/admin/users",          h_admin_users,         2},
   {"POST", "/api/admin/user",           h_admin_user_save,     2},
   {"POST", "/api/admin/user/delete",    h_admin_user_delete,   2},
+  {"POST", "/api/admin/user/password",  h_admin_user_password, 2},
+  {"GET",  "/api/admin/requests",       h_admin_requests,      2},
+  {"POST", "/api/admin/request",        h_admin_request_decide, 2},
+  {"POST", "/api/admin/mail/test",      h_admin_mail_test,     2},
   {"GET",  "/api/admin/browse",         h_admin_browse,        2},
   {"GET",  "/api/admin/settings",       h_admin_settings_get,  2},
   {"POST", "/api/admin/settings",       h_admin_settings_set,  2},
@@ -1398,6 +1936,7 @@ http_serve(uint16_t port) {
     return -1;
   }
   LOG_PRINTF("ps5share: web escuchando en el puerto %u\n", port);
+  sessions_load();
 
   for(;;) {
     struct sockaddr_in peer;

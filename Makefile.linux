@@ -11,7 +11,7 @@ CFLAGS ?= -O2 -g
 override CFLAGS += -Wall -Werror -DVERSION_TAG=\"$(VERSION_TAG)\" -Isrc -D_GNU_SOURCE \
                    -DWOLFSSL_USER_SETTINGS -I$(WOLF_DIR) -I$(WOLF_DIR)/wolfssl -I$(WOLF_DIR)/wolfssh
 
-SOURCE := src/app.c src/config.c src/vfs.c src/crypt.c src/ftp.c src/http.c src/sftp.c src/io.c
+SOURCE := src/app.c src/config.c src/vfs.c src/crypt.c src/ftp.c src/http.c src/sftp.c src/io.c src/smtp.c src/tsip.c
 SOURCE += src/sha256.c src/notify.c src/main-linux.c
 
 WOLF_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(WOLF_SRC))

@@ -12,6 +12,9 @@ later version.  See LICENSE.  */
 #include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stddef.h>
+
+#include "crypt.h"
 
 #define CFG_MAX_USERS   64
 #define CFG_MAX_MOUNTS  16
@@ -19,6 +22,8 @@ later version.  See LICENSE.  */
 #define CFG_SALT_HEX    32   /* 16 bytes */
 #define CFG_HASH_HEX    64   /* 32 bytes */
 #define CFG_PBKDF2_ITER 20000
+#define CFG_PASS_MAX    128   /* longitud máxima de una contraseña */
+#define CFG_EMAIL_MAX   127
 
 
 typedef struct mount {
@@ -39,6 +44,8 @@ typedef struct user {
   int  must_chpass;           /* debe cambiarla en el próximo inicio de sesión web */
   char ksalt[CFG_SALT_HEX+1]; /* sal de la clave que envuelve su DEK */
   char kwrap[121];            /* DEK envuelta (vacía si aún no tiene) */
+  char pwenc[CRYPT_SEAL_HEX+1]; /* contraseña cifrada con la clave maestra (vacía = no se conoce) */
+  char email[CFG_EMAIL_MAX+1];  /* correo de recuperación */
   int  nmounts;
   mount_t mounts[CFG_MAX_MOUNTS];
 } user_t;
@@ -53,6 +60,14 @@ typedef struct settings {
   uint16_t sftp_port;
   int      sftp_enabled;
   int      ftp_enabled;       /* FTP sin cifrar: desactivado por defecto */
+  /* Correo saliente (recuperación de contraseñas) */
+  char     smtp_host[96];
+  uint16_t smtp_port;         /* 465 = TLS directo, 587 = STARTTLS */
+  char     smtp_user[CFG_EMAIL_MAX+1];
+  char     smtp_passenc[CRYPT_SEAL_HEX+1];
+  char     smtp_from_name[64];
+  int      recover_email;     /* permitir «olvidé mi contraseña» por correo */
+  int      recover_admin;     /* permitir pedir la contraseña a un administrador */
 } settings_t;
 
 
@@ -101,6 +116,18 @@ void cfg_random(uint8_t *buf, size_t n);
    KEY (ukey_t de crypt.h) queda con ok=0 si no hay clave disponible. */
 struct ukey;
 void cfg_unlock_key(const char *name, const char *pass, struct ukey *key);
+/* Igual, con la contraseña guardada (si se conoce). */
+void cfg_unlock_key_stored(const char *name, struct ukey *key);
 int  cfg_user_has_enc(const user_t *u);
 int  ps5share_rand_seed(unsigned char *out, unsigned int sz);   /* para wolfCrypt */
 int  cfg_consttime_eq(const char *a, const char *b);
+
+/* Contraseñas recuperables (cifradas con la clave maestra de la consola). */
+int  cfg_get_password(const char *name, char *out, size_t outlen);  /* 0 si se conoce */
+int  cfg_valid_email(const char *s);
+/* Cambia el correo de recuperación de un usuario. */
+int  cfg_set_email(const char *name, const char *email, char *err, size_t errlen);
+/* Contraseña de la cuenta SMTP. */
+int  cfg_smtp_password(char *out, size_t outlen);
+int  cfg_set_smtp_password(settings_t *s, const char *pass);
+const char *cfg_dir(void);

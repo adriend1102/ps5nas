@@ -1,4 +1,4 @@
-# PS5 Share — app de la pantalla de inicio
+# PS5NAS — app de la pantalla de inicio
 
 Esta carpeta es la app nativa (título `PPSA27360`). Al abrirla arranca el
 servidor ps5share si no está en marcha (envía `assets/ps5share.elf` al

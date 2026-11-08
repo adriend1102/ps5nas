@@ -1,14 +1,29 @@
-/* Configuración de wolfSSL/wolfSSH para ps5share (servidor SFTP).
-   Solo wolfCrypt: algoritmos modernos más los necesarios para clientes
-   antiguos (Android, JSch).  */
+/* Configuración de wolfSSL/wolfSSH para ps5share: servidor SFTP y cliente
+   TLS (solo para enviar correos de recuperación por SMTP).  Algoritmos
+   modernos más los necesarios para clientes SFTP antiguos (Android, JSch). */
 
 #ifndef PS5SHARE_USER_SETTINGS_H
 #define PS5SHARE_USER_SETTINGS_H
 
-#define WOLFCRYPT_ONLY
 #define WOLFSSL_WOLFSSH
 #define NO_FILESYSTEM
 #define WOLFSSL_NO_SOCK
+#define WOLFSSL_USER_IO
+
+/* Cliente TLS 1.2/1.3 con verificación de certificados */
+#define NO_WOLFSSL_SERVER
+#define WOLFSSL_TLS13
+#define HAVE_TLS_EXTENSIONS
+#define HAVE_SUPPORTED_CURVES
+#define HAVE_SNI
+#define HAVE_HKDF
+#define HAVE_EXTENDED_MASTER
+#define HAVE_ENCRYPT_THEN_MAC
+#define WOLFSSL_ALT_CERT_CHAINS
+#define HAVE_CHACHA
+#define HAVE_POLY1305
+#define HAVE_ONE_TIME_AUTH
+#define HAVE_FFDHE_2048
 #define NO_WOLFSSL_DIR
 #define NO_WRITEV
 #define NO_MAIN_DRIVER

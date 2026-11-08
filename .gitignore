@@ -10,3 +10,4 @@ app/build/
 app/dist/
 app/assets/ps5share.elf
 app/runtime/libc.prx
+__pycache__/

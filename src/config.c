@@ -22,11 +22,15 @@
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static char       g_path[PATH_MAX];
+static char       g_dir[PATH_MAX];
+static uint8_t    g_master[32];       /* clave maestra: cifra contraseñas guardadas */
+static int        g_master_ok = 0;
 static settings_t g_settings;
 static user_t     g_users[CFG_MAX_USERS];
 static int        g_nusers = 0;
 
 
+const char *cfg_dir(void) { return g_dir; }
 void cfg_lock(void)   { pthread_mutex_lock(&g_lock); }
 void cfg_unlock(void) { pthread_mutex_unlock(&g_lock); }
 settings_t *cfg_settings(void) { return &g_settings; }
@@ -195,6 +199,84 @@ cfg_set_password(user_t *u, const char *pass) {
 
 
 /* ------------------------------------------------------------------ */
+/* Contraseñas recuperables                                            */
+/* ------------------------------------------------------------------ */
+
+static void
+pw_aad(const char *name, char *aad, size_t n) {
+  snprintf(aad, n, "ps5share-pw|%s", name);
+}
+
+
+/* Cifra PASS para el usuario NAME en OUT (vacío si no se puede). */
+static void
+seal_pw(const char *name, const char *pass, char out[CRYPT_SEAL_HEX + 1]) {
+  char aad[CFG_NAME_MAX + 16];
+  out[0] = 0;
+  if(!g_master_ok || strlen(pass) > CRYPT_SEAL_MAX) return;
+  pw_aad(name, aad, sizeof(aad));
+  if(crypt_seal(g_master, aad, pass, strlen(pass), out, CRYPT_SEAL_HEX + 1)) out[0] = 0;
+}
+
+
+static int
+open_pw(const user_t *u, char *out, size_t outlen) {
+  char aad[CFG_NAME_MAX + 16];
+  if(!g_master_ok || !u->pwenc[0]) return -1;
+  pw_aad(u->name, aad, sizeof(aad));
+  return crypt_open(g_master, aad, u->pwenc, out, outlen);
+}
+
+
+int
+cfg_get_password(const char *name, char *out, size_t outlen) {
+  user_t u;
+  if(cfg_get_user(name, &u)) return -1;
+  int r = open_pw(&u, out, outlen);
+  memset(&u, 0, sizeof(u));
+  return r;
+}
+
+
+int
+cfg_smtp_password(char *out, size_t outlen) {
+  char hex[CRYPT_SEAL_HEX + 1];
+  cfg_lock();
+  memcpy(hex, g_settings.smtp_passenc, sizeof(hex));
+  cfg_unlock();
+  out[0] = 0;
+  if(!g_master_ok || !hex[0]) return -1;
+  return crypt_open(g_master, "ps5share-smtp", hex, out, outlen);
+}
+
+
+int
+cfg_set_smtp_password(settings_t *st, const char *pass) {
+  st->smtp_passenc[0] = 0;
+  if(!pass[0]) return 0;
+  if(!g_master_ok || strlen(pass) > CRYPT_SEAL_MAX) return -1;
+  return crypt_seal(g_master, "ps5share-smtp", pass, strlen(pass), st->smtp_passenc,
+                    sizeof(st->smtp_passenc));
+}
+
+
+int
+cfg_valid_email(const char *s) {
+  size_t n = strlen(s);
+  if(n < 3 || n > CFG_EMAIL_MAX) return 0;
+  const char *at = strchr(s, '@');
+  if(!at || at == s || strchr(at + 1, '@') || !strchr(at + 1, '.')) return 0;
+  if(at[1] == '.' || s[n-1] == '.') return 0;
+  for(size_t i=0; i<n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    if(c <= 0x20 || c == 0x7f || c == '<' || c == '>' || c == ',' || c == ';' ||
+       c == '"' || c == '\\' || c == '(' || c == ')') return 0;
+  }
+  return 1;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Validaciones                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -259,6 +341,11 @@ defaults(settings_t *s) {
   s->sftp_port = 2222;
   s->sftp_enabled = 1;
   s->ftp_enabled = 0;
+  snprintf(s->smtp_host, sizeof(s->smtp_host), "smtp.gmail.com");
+  s->smtp_port = 465;
+  snprintf(s->smtp_from_name, sizeof(s->smtp_from_name), "PS5NAS");
+  s->recover_email = 1;
+  s->recover_admin = 1;
 }
 
 
@@ -302,6 +389,17 @@ load_file(const char *path) {
       else if(!strcmp(k, "ftp_enabled")) g_settings.ftp_enabled = atoi(v);
       else if(!strcmp(k, "pasv_address"))
         snprintf(g_settings.pasv_address, sizeof(g_settings.pasv_address), "%s", v);
+      else if(!strcmp(k, "smtp_host"))
+        snprintf(g_settings.smtp_host, sizeof(g_settings.smtp_host), "%s", v);
+      else if(!strcmp(k, "smtp_port")) g_settings.smtp_port = atoi(v);
+      else if(!strcmp(k, "smtp_user"))
+        snprintf(g_settings.smtp_user, sizeof(g_settings.smtp_user), "%s", v);
+      else if(!strcmp(k, "smtp_pass"))
+        snprintf(g_settings.smtp_passenc, sizeof(g_settings.smtp_passenc), "%s", v);
+      else if(!strcmp(k, "smtp_from_name"))
+        snprintf(g_settings.smtp_from_name, sizeof(g_settings.smtp_from_name), "%s", v);
+      else if(!strcmp(k, "recover_email")) g_settings.recover_email = atoi(v);
+      else if(!strcmp(k, "recover_admin")) g_settings.recover_admin = atoi(v);
     } else if(!strcmp(fld[0], "user") && n >= 6) {
       if(g_nusers >= CFG_MAX_USERS || !cfg_valid_username(fld[1])) continue;
       if(cfg_find_user_locked(fld[1])) continue;
@@ -319,6 +417,13 @@ load_file(const char *path) {
       if(!u || strlen(fld[2]) != CFG_SALT_HEX || strlen(fld[3]) != CRYPT_WRAP_HEX) continue;
       snprintf(u->ksalt, sizeof(u->ksalt), "%s", fld[2]);
       snprintf(u->kwrap, sizeof(u->kwrap), "%s", fld[3]);
+    } else if(!strcmp(fld[0], "pw") && n >= 3) {
+      user_t *u = cfg_find_user_locked(fld[1]);
+      if(u && strlen(fld[2]) < sizeof(u->pwenc))
+        snprintf(u->pwenc, sizeof(u->pwenc), "%s", fld[2]);
+    } else if(!strcmp(fld[0], "email") && n >= 3) {
+      user_t *u = cfg_find_user_locked(fld[1]);
+      if(u && cfg_valid_email(fld[2])) snprintf(u->email, sizeof(u->email), "%s", fld[2]);
     } else if(!strcmp(fld[0], "mount") && n >= 5) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(!u || u->nmounts >= CFG_MAX_MOUNTS) continue;
@@ -357,6 +462,13 @@ cfg_save_locked(void) {
   fprintf(f, "set\tsftp_port\t%u\n", g_settings.sftp_port);
   fprintf(f, "set\tsftp_enabled\t%d\n", g_settings.sftp_enabled);
   fprintf(f, "set\tftp_enabled\t%d\n", g_settings.ftp_enabled);
+  fprintf(f, "set\tsmtp_host\t%s\n", g_settings.smtp_host);
+  fprintf(f, "set\tsmtp_port\t%u\n", g_settings.smtp_port);
+  fprintf(f, "set\tsmtp_user\t%s\n", g_settings.smtp_user);
+  fprintf(f, "set\tsmtp_pass\t%s\n", g_settings.smtp_passenc);
+  fprintf(f, "set\tsmtp_from_name\t%s\n", g_settings.smtp_from_name);
+  fprintf(f, "set\trecover_email\t%d\n", g_settings.recover_email);
+  fprintf(f, "set\trecover_admin\t%d\n", g_settings.recover_admin);
 
   for(int i=0; i<g_nusers; i++) {
     user_t *u = &g_users[i];
@@ -368,6 +480,8 @@ cfg_save_locked(void) {
               u->mounts[j].name, u->mounts[j].path);
     }
     if(u->kwrap[0]) fprintf(f, "ukey\t%s\t%s\t%s\n", u->name, u->ksalt, u->kwrap);
+    if(u->pwenc[0]) fprintf(f, "pw\t%s\t%s\n", u->name, u->pwenc);
+    if(u->email[0]) fprintf(f, "email\t%s\t%s\n", u->name, u->email);
   }
 
   if(fflush(f) || fsync(fileno(f))) {
@@ -401,10 +515,44 @@ mkdir_p(const char *dir) {
 }
 
 
+static void
+load_master_key(void) {
+  char path[PATH_MAX + 16];
+  snprintf(path, sizeof(path), "%s/master.key", g_dir);
+  int fd = open(path, O_RDONLY);
+  if(fd < 0 && errno != ENOENT) {
+    LOG_PERROR("master.key");
+    return;
+  }
+  if(fd >= 0) {
+    ssize_t n = read(fd, g_master, sizeof(g_master));
+    close(fd);
+    if(n == (ssize_t)sizeof(g_master)) {
+      g_master_ok = 1;
+      return;
+    }
+    LOG_PRINTF("ps5share: %s está dañada; se crea otra\n", path);
+  }
+  random_bytes(g_master, sizeof(g_master));
+  char tmp[PATH_MAX + 32];
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if(fd < 0 || write(fd, g_master, sizeof(g_master)) != (ssize_t)sizeof(g_master) ||
+     fsync(fd) || close(fd) || rename(tmp, path)) {
+    LOG_PERROR("master.key");
+    if(fd >= 0) close(fd);
+    return;
+  }
+  g_master_ok = 1;
+}
+
+
 int
 cfg_init(const char *dir) {
   mkdir_p(dir);
+  snprintf(g_dir, sizeof(g_dir), "%s", dir);
   snprintf(g_path, sizeof(g_path), "%s/users.conf", dir);
+  load_master_key();
 
   cfg_lock();
   defaults(&g_settings);
@@ -456,6 +604,23 @@ cfg_authenticate(const char *name, const char *pass, user_t *out) {
   hash_password(found ? u.salt : "00000000000000000000000000000000", pass, hash);
   if(!found || !u.enabled || !u.hash[0]) return -1;
   if(!cfg_consttime_eq(hash, u.hash)) return -1;
+
+  /* Usuarios de versiones anteriores: se guarda su contraseña (cifrada con
+     la clave maestra) la primera vez que entran. */
+  if(!u.pwenc[0] && g_master_ok) {
+    char enc[CRYPT_SEAL_HEX + 1];
+    seal_pw(name, pass, enc);
+    if(enc[0]) {
+      cfg_lock();
+      user_t *p = cfg_find_user_locked(name);
+      if(p && !p->pwenc[0] && !strcmp(p->hash, u.hash)) {
+        memcpy(p->pwenc, enc, sizeof(p->pwenc));
+        cfg_save_locked();
+        memcpy(u.pwenc, enc, sizeof(u.pwenc));
+      }
+      cfg_unlock();
+    }
+  }
   if(out) memcpy(out, &u, sizeof(u));
   return 0;
 }
@@ -678,15 +843,48 @@ cfg_upsert_user(const user_t *in, const char *newpass, char *err, size_t errlen)
     snprintf(err, errlen, "La contraseña debe tener al menos 6 caracteres");
     return -1;
   }
+  if(newpass && strlen(newpass) > CFG_PASS_MAX) {
+    snprintf(err, errlen, "La contraseña es demasiado larga (máx. %d)", CFG_PASS_MAX);
+    return -1;
+  }
+  if(in->email[0] && !cfg_valid_email(in->email)) {
+    snprintf(err, errlen, "Correo de recuperación no válido");
+    return -1;
+  }
 
   memcpy(&tmp, in, sizeof(tmp));
-  tmp.ksalt[0] = tmp.kwrap[0] = 0;
+  tmp.ksalt[0] = tmp.kwrap[0] = tmp.pwenc[0] = 0;
   for(int i=0; i<tmp.nmounts; i++) {
     if(tmp.mounts[i].enc) tmp.mounts[i].rw = 1;
   }
+
+  /* Contraseña nueva puesta por el administrador.  Si se conocía la
+     anterior, su clave de cifrado se vuelve a envolver con la nueva y no
+     pierde nada.  Todo lo lento (PBKDF2) se hace fuera del lock. */
+  user_t old;
+  int have_old = !cfg_get_user(in->name, &old);
+  int rewrapped = 0;
   if(newpass && newpass[0]) {
-    cfg_set_password(&tmp, newpass);   /* PBKDF2 fuera del lock */
+    cfg_set_password(&tmp, newpass);
+    seal_pw(tmp.name, newpass, tmp.pwenc);
+    if(have_old && old.kwrap[0]) {
+      char oldpass[CRYPT_SEAL_MAX + 1];
+      uint8_t kek[32], dek[32];
+      if(!open_pw(&old, oldpass, sizeof(oldpass))) {
+        derive_kek(oldpass, old.ksalt, kek);
+        if(!crypt_unwrap(kek, old.kwrap, dek)) {
+          cfg_random_hex(tmp.ksalt, CFG_SALT_HEX/2);
+          derive_kek(newpass, tmp.ksalt, kek);
+          if(!crypt_wrap(kek, dek, tmp.kwrap)) rewrapped = 1;
+          else tmp.ksalt[0] = tmp.kwrap[0] = 0;
+        }
+      }
+      memset(oldpass, 0, sizeof(oldpass));
+      memset(kek, 0, sizeof(kek));
+      memset(dek, 0, sizeof(dek));
+    }
   }
+  memset(&old, 0, sizeof(old));
 
   cfg_lock();
   user_t *u = cfg_find_user_locked(in->name);
@@ -710,12 +908,11 @@ cfg_upsert_user(const user_t *in, const char *newpass, char *err, size_t errlen)
     if(!(newpass && newpass[0])) {
       memcpy(tmp.salt, u->salt, sizeof(tmp.salt));
       memcpy(tmp.hash, u->hash, sizeof(tmp.hash));
-      /* Sin cambio de contraseña se conserva su clave de cifrado.  Si el
-         administrador le pone otra contraseña, la clave anterior no se
-         puede volver a envolver (no conoce la antigua): se pierde. */
+      memcpy(tmp.pwenc, u->pwenc, sizeof(tmp.pwenc));
       memcpy(tmp.ksalt, u->ksalt, sizeof(tmp.ksalt));
       memcpy(tmp.kwrap, u->kwrap, sizeof(tmp.kwrap));
-    } else if(u->kwrap[0]) {
+    } else if(u->kwrap[0] && !rewrapped) {
+      /* No se conocía su contraseña anterior: la clave no se puede abrir. */
       LOG_PRINTF("ps5share: el administrador cambió la contraseña de '%s'; "
                  "sus archivos cifrados anteriores ya no se pueden abrir\n", u->name);
     }
@@ -752,6 +949,10 @@ cfg_change_own_password(const char *name, const char *oldpass, const char *newpa
     snprintf(err, errlen, "La contraseña debe tener al menos 6 caracteres");
     return -1;
   }
+  if(strlen(newpass) > CFG_PASS_MAX) {
+    snprintf(err, errlen, "La contraseña es demasiado larga (máx. %d)", CFG_PASS_MAX);
+    return -1;
+  }
   if(!strcmp(oldpass, newpass)) {
     snprintf(err, errlen, "La nueva contraseña debe ser distinta de la actual");
     return -1;
@@ -759,6 +960,7 @@ cfg_change_own_password(const char *name, const char *oldpass, const char *newpa
 
   memset(&tmp, 0, sizeof(tmp));
   cfg_set_password(&tmp, newpass);   /* PBKDF2 fuera del lock */
+  seal_pw(name, newpass, tmp.pwenc);
 
   /* Vuelve a envolver su clave de cifrado con la contraseña nueva. */
   if(cur.kwrap[0]) {
@@ -788,11 +990,33 @@ cfg_change_own_password(const char *name, const char *oldpass, const char *newpa
   } else {
     memcpy(u->salt, tmp.salt, sizeof(u->salt));
     memcpy(u->hash, tmp.hash, sizeof(u->hash));
+    memcpy(u->pwenc, tmp.pwenc, sizeof(u->pwenc));
     if(cur.kwrap[0]) {
       memcpy(u->ksalt, tmp.ksalt, sizeof(u->ksalt));
       memcpy(u->kwrap, tmp.kwrap, sizeof(u->kwrap));
     }
     u->must_chpass = 0;
+    if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+    else r = 0;
+  }
+  cfg_unlock();
+  return r;
+}
+
+
+int
+cfg_set_email(const char *name, const char *email, char *err, size_t errlen) {
+  int r = -1;
+  if(email[0] && !cfg_valid_email(email)) {
+    snprintf(err, errlen, "Correo no válido");
+    return -1;
+  }
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u) {
+    snprintf(err, errlen, "No existe el usuario");
+  } else {
+    snprintf(u->email, sizeof(u->email), "%s", email);
     if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
     else r = 0;
   }
@@ -845,6 +1069,16 @@ cfg_update_settings(const settings_t *s, char *err, size_t errlen) {
       return -1;
     }
   }
+  if(s->smtp_port == 0 || strchr(s->smtp_host, '\t') || strchr(s->smtp_user, '\t') ||
+     strchr(s->smtp_from_name, '\t') || strchr(s->smtp_from_name, '\n') ||
+     strchr(s->smtp_from_name, '\r')) {
+    snprintf(err, errlen, "Ajustes de correo no válidos");
+    return -1;
+  }
+  if(s->smtp_user[0] && !cfg_valid_email(s->smtp_user)) {
+    snprintf(err, errlen, "La cuenta de correo no es válida");
+    return -1;
+  }
   cfg_lock();
   memcpy(&g_settings, s, sizeof(g_settings));
   if(cfg_save_locked()) {
@@ -854,4 +1088,14 @@ cfg_update_settings(const settings_t *s, char *err, size_t errlen) {
   }
   cfg_unlock();
   return r;
+}
+
+
+void
+cfg_unlock_key_stored(const char *name, struct ukey *key) {
+  char pass[CRYPT_SEAL_MAX + 1];
+  memset(key, 0, sizeof(*key));
+  if(cfg_get_password(name, pass, sizeof(pass))) return;
+  cfg_unlock_key(name, pass, key);
+  memset(pass, 0, sizeof(pass));
 }

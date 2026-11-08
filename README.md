@@ -1,15 +1,20 @@
-# PS5 Share
+# PS5NAS
+
+<img src="app/sce_sys/icon0.png" width="128" align="right" alt="">
 
 Servidor de archivos **multiusuario** que corre directamente en una PS5 con
-jailbreak. Cada usuario tiene su contraseña y solo ve las carpetas que le
+jailbreak (antes se llamaba *PS5 Share*). Cada usuario tiene su contraseña y solo ve las carpetas que le
 asignes, en **solo lectura** o **lectura y escritura**. Se gestiona desde una
 **web** (usuarios, carpetas y ajustes) y se accede por **SFTP** (cifrado), desde
 el propio navegador (explorador de archivos con subida y descarga) o, si lo
 activas, por FTP clásico.
 
-Incluye **carpetas privadas cifradas**: lo que un usuario guarda en ellas solo
-lo puede leer él, ni siquiera el administrador; y una **app para la pantalla de
-inicio** que arranca el servidor y abre el panel en el navegador de la consola.
+Incluye **carpetas privadas cifradas** (en el disco solo hay datos cifrados),
+un **explorador web** que abre fotos, vídeos, música y PDF y edita archivos de
+texto, **recuperación de contraseñas** (por correo o pidiéndosela al
+administrador), **«recordar sesión en este dispositivo»** y una **app para la
+pantalla de inicio** que arranca el servidor, enseña las direcciones (también la
+IP de Tailscale) y abre el panel en el navegador de la consola.
 
 Está pensado para funcionar junto a **Tailscale para PS5**, de modo que la
 consola sea a la vez el servidor y el punto de acceso VPN, sin necesitar ningún
@@ -33,7 +38,7 @@ Törnblom (GPLv3).
 
 | | |
 |---|---|
-| `PPSA27360.zip` | La app **PS5 Share** para la pantalla de inicio (lleva dentro el servidor). |
+| `PPSA27360.zip` | La app **PS5NAS** para la pantalla de inicio (lleva dentro el servidor). |
 | `ps5share.elf` | El payload para la PS5 (web + SFTP, y FTP opcional), por si lo prefieres sin app. |
 | `windows/enviar-payload.ps1` | Envía cualquier `.elf` a la PS5 (puerto 9021). |
 | `windows/instalar-tailscale-ps5.ps1` | Descarga la última versión de Tailscale para PS5 y la envía. |
@@ -47,15 +52,20 @@ Törnblom (GPLv3).
 [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) y un cargador de
 ELF en el puerto 9021 (elfldr). Descomprime `PPSA27360.zip` y copia la carpeta
 `PPSA27360` a `/data/homebrew/` (que quede `/data/homebrew/PPSA27360/eboot.bin`)
-con todos los permisos en `777`. En unos segundos aparece **PS5 Share** en la
+con todos los permisos en `777`. En unos segundos aparece **PS5NAS** en la
 pantalla de inicio. Al abrirla:
 
 1. si el servidor no está en marcha, lo arranca (envía su `ps5share.elf` al
    cargador);
 2. abre el panel en el navegador de la PS5 (`http://127.0.0.1:8000`), donde
    inicias sesión con tu usuario;
-3. muestra las direcciones para conectarse. **X** vuelve a abrir el panel y
-   **TRIÁNGULO** reinicia el servidor.
+3. muestra las direcciones para conectarse en casa y, si el payload de
+   Tailscale está en marcha, su IP `100.x.y.z` para conectarse desde fuera.
+   **X** vuelve a abrir el panel y **TRIÁNGULO** reinicia el servidor.
+
+Marca **«Recordar sesión en este dispositivo»** al entrar desde la consola (ya
+viene marcada en el navegador de la PS5) y la próxima vez entrarás directo,
+aunque se reinicie el servidor. Dura 180 días o hasta que pulses **Salir**.
 
 **Solo el payload.** Con el jailbreak y el cargador de ELF activos:
 
@@ -84,7 +94,7 @@ sesiones SFTP, FTP y web se cortan.
 
 **Contraseñas propias.** En cada usuario puedes marcar:
 
-* *Puede cambiar su propia contraseña*: le aparece el botón **Contraseña** en
+* *Puede cambiar su propia contraseña*: puede cambiarla desde **Mi cuenta** en
   la web (también desde el navegador del móvil).
 * *Obligarle a cambiarla al iniciar sesión*: la primera vez que entre en la web
   tendrá que poner una contraseña nueva antes de hacer nada más. Hasta que lo
@@ -93,6 +103,12 @@ sesiones SFTP, FTP y web se cortan.
 
 Los usuarios creados con versiones anteriores tienen las dos opciones
 desactivadas; actívalas en su ficha si quieres.
+
+**Ver la contraseña de un usuario.** En su ficha, el ojo de *Contraseña
+actual* la muestra. Las contraseñas se guardan cifradas con una clave de la
+consola (`/data/ps5share/master.key`), no en claro. De los usuarios creados
+con versiones anteriores solo se conoce la contraseña después de que vuelvan a
+entrar una vez (por SFTP o por la web).
 
 Rutas habituales del almacenamiento en la PS5: `/mnt/ext0` (SSD M.2 o
 almacenamiento ampliado), `/mnt/usb0`, `/mnt/usb1` (discos USB), `/data`.
@@ -139,12 +155,52 @@ el FTP de ps5share, donde solo ve sus carpetas.
 ### 5. Que arranque solo
 
 Los payloads se pierden al reiniciar la consola o salir del modo reposo sin
-jailbreak. Puedes abrir la app PS5 Share después de cada jailbreak, o añadir
+jailbreak. Puedes abrir la app PS5NAS después de cada jailbreak, o añadir
 `tailscale.elf` y `ps5share.elf` (está dentro de la carpeta `assets` de la app)
 a tu cargador automático
 (el autoloader o gestor de payloads que uses) para que se carguen solos tras
 cada jailbreak. La PS5 no atiende conexiones en modo reposo: tiene que estar
 encendida.
+
+## Recuperar contraseñas
+
+En la pantalla de inicio de sesión hay **«¿Olvidaste tu contraseña?»**, con
+dos formas (puedes activar una, las dos o ninguna en **Ajustes → Recuperar
+contraseñas**):
+
+* **Por correo.** El usuario escribe su nombre y su *correo de recuperación*;
+  si coinciden, le llega un correo con su contraseña actual. El correo se pone
+  en la ficha del usuario (los usuarios que ya tenías no tienen ninguno: añádelo
+  tú) y él mismo puede cambiarlo en **Mi cuenta** (y ponerlo al cambiar su
+  contraseña temporal). Por seguridad, la web responde siempre lo mismo, exista
+  o no el usuario, y no envía más de un correo cada 2 minutos por usuario.
+* **Pidiéndosela al administrador.** El usuario escribe su nombre y deja la
+  página abierta. Al administrador le llega una notificación en la PS5 y la
+  solicitud aparece en **Usuarios** (con un contador en la pestaña). Si la
+  aceptas, el usuario ve su contraseña en su pantalla (una sola vez). Si su
+  contraseña aún no se conoce, ponle una nueva antes de aceptar.
+
+**Configurar el correo (Gmail).** Los correos salen de una cuenta de Gmail
+tuya:
+
+1. Activa la verificación en dos pasos en esa cuenta de Google.
+2. Crea una **contraseña de aplicación** en
+   <https://myaccount.google.com/apppasswords> (16 letras).
+3. En **Ajustes → Recuperar contraseñas** escribe la cuenta de Gmail y esa
+   contraseña, guarda y pulsa **Enviar correo de prueba**.
+
+Servidor `smtp.gmail.com`, puerto 465 (TLS). Sirve cualquier otro proveedor:
+puerto 465 para TLS directo o 587 para STARTTLS. Se comprueba el certificado del
+servidor; la contraseña de correo se guarda cifrada.
+
+## Ver y editar archivos en la web
+
+En **Archivos**, pulsa un archivo para abrirlo: fotos (con anterior/siguiente),
+vídeo, música y texto se ven en la propia página; los PDF se abren en una
+pestaña nueva. Los archivos de texto (`.txt`, `.md`, `.json`, `.srt`, `.ini`,
+código…) se pueden **editar y guardar** (Ctrl+S), y **Nuevo archivo** crea uno.
+También puedes crear carpetas, renombrar, borrar, subir (o arrastrar) y
+descargar. Todo funciona igual en las carpetas privadas cifradas y por SFTP.
 
 ## Conectarse con SFTP
 
@@ -181,12 +237,15 @@ carpeta. Desde ese momento:
   cifrados.
 * El usuario no tiene que hacer nada distinto: entra por SFTP o por la web con
   su usuario y contraseña de siempre y lo ve todo normal.
-* La clave sale de **su contraseña**. Por eso:
-  - marca **«Obligarle a cambiarla al iniciar sesión»** al darle una contraseña
-    temporal; así la clave se crea con una contraseña que solo conoce él;
-  - si él cambia su contraseña desde la web, sus archivos siguen accesibles;
-  - si **tú** le pones otra contraseña (porque la olvidó), **lo que tenía
-    cifrado se pierde para siempre**. No hay forma de recuperarlo, por diseño.
+* La clave se protege con **su contraseña**. Si él cambia su contraseña, o se
+  la cambias tú, sus archivos siguen accesibles (la clave se vuelve a proteger
+  con la nueva). La única excepción: un usuario de una versión anterior cuya
+  contraseña aún no se conoce (no ha vuelto a entrar); si le pones otra antes,
+  pierde lo que tuviera cifrado.
+* **Ojo:** como el administrador puede ver las contraseñas, también podría
+  entrar con la cuenta de ese usuario y ver su carpeta. El cifrado protege
+  frente a quien lea el disco (por ejemplo, si te roban el SSD), frente a los
+  demás usuarios y frente a mirar la carpeta desde otra cuenta.
 * La carpeta tiene que ser nueva o estar vacía (si no existe se crea sola) y
   solo puede pertenecer a un usuario.
 * Solo funciona por **SFTP y la web**. El FTP no la muestra.
@@ -204,8 +263,13 @@ también en discos exFAT.
 
 ## Seguridad
 
-* Contraseñas guardadas con PBKDF2-SHA256 (20 000 iteraciones, sal aleatoria)
-  en `/data/ps5share/users.conf`.
+* Contraseñas comprobadas con PBKDF2-SHA256 (20 000 iteraciones, sal
+  aleatoria). Además se guarda una copia cifrada (AES-256-GCM) con la clave de
+  la consola `/data/ps5share/master.key`, para poder mostrársela al
+  administrador y enviarla por correo. Quien tenga acceso a los archivos de la
+  PS5 (jailbreak) puede descifrarlas: protege la consola.
+* Sesiones recordadas en `/data/ps5share/sessions.conf` (solo el hash del
+  token, no el token).
 * Los usuarios no pueden salir de sus carpetas (ni con `..` ni con enlaces
   simbólicos) y no pueden borrar ni renombrar la carpeta raíz asignada.
 * Web: cookie `HttpOnly` + `SameSite=Strict`, protección CSRF por cabecera,
@@ -277,6 +341,9 @@ Para probar en Linux sin consola:
 | `src/vfs.c` | Carpetas virtuales por usuario y bloqueo de escapes |
 | `src/sftp.c` | Servidor SFTP v3 sobre wolfSSH, con el mismo VFS y permisos |
 | `src/crypt.c` | Carpetas privadas: claves, nombres y contenido cifrados |
+| `src/smtp.c` | Envío de correos (SMTP con TLS de wolfSSL, CA raíz en `src/cacerts.h`) |
+| `src/tsip.c` | Busca la IP de Tailscale de la consola (API del payload en `:8090`) |
+| `tools/gen-icon.py` | Genera el icono de la app |
 | `app/` | App de la pantalla de inicio (eboot.bin) |
 | `src/ftp.c` | Servidor FTP (derivado de ftpsrv) con login y permisos |
 | `third_party/` | Configuración de wolfSSL/wolfSSH y script de descarga |
@@ -304,9 +371,15 @@ mount	ana	rw	Fotos	/mnt/ext0/Fotos
 mount	ana	ro	Películas	/mnt/usb0/Peliculas
 mount	ana	enc	Privado	/mnt/ext0/privado/ana
 ukey	ana	<sal>	<clave de datos envuelta>
+pw	ana	<contraseña cifrada con master.key>
+email	ana	ana@example.com
 ```
 
-Si olvidas la contraseña del administrador: carga el ftpsrv original, borra
+Los ajustes de correo son `smtp_host`, `smtp_port`, `smtp_user`, `smtp_pass`
+(cifrada), `smtp_from_name`, `recover_email` y `recover_admin`.
+
+Si olvidas la contraseña del administrador y no tienes correo de recuperación
+ni otro administrador: carga el ftpsrv original, borra
 `/data/ps5share/users.conf` (o solo las líneas de ese usuario) y vuelve a
 cargar ps5share. Si no queda ningún usuario, la web vuelve a pedir que crees el
 administrador.

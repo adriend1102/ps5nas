@@ -490,7 +490,7 @@ check(sf3.open("/Privado/log.txt").read() == b"uno\ndos\n", "tras cambiar su con
 s, j, _ = admin.req("POST", "/api/admin/user", mk({"mounts": f"rw|Privado|{PRIV}"}))
 check(s == 400, "no se puede quitar el cifrado de una carpeta con archivos")
 
-# el admin le pone otra contraseña: los archivos anteriores quedan ilegibles
+# el admin le pone otra contraseña: como se conocía la anterior, no pierde nada
 s, j, _ = admin.req("POST", "/api/admin/user", mk({"password": "reseteada1",
                                                      "mounts": f"enc|Privado|{PRIV}\nrw|Comun|{BASE}/share/inbox"}))
 check(s == 200, "el admin cambia la contraseña de eva")
@@ -500,10 +500,235 @@ try:
 except Exception:
     pass
 t3, sf3 = sftp_connect("eva", "reseteada1")
-check(sf3.listdir("/Privado") == [], "tras el cambio del admin, los archivos antiguos no se pueden abrir")
-sf3.open("/Privado/nuevo.txt", "wb").write(b"empiezo de cero")
-check(sf3.open("/Privado/nuevo.txt").read() == b"empiezo de cero", "y puede seguir usando la carpeta con su nueva clave")
+check(sf3.open("/Privado/log.txt").read() == b"uno\ndos\n",
+      "tras el cambio del admin conserva sus archivos cifrados")
+sf3.open("/Privado/nuevo.txt", "wb").write(b"sigo igual")
+check(sf3.open("/Privado/nuevo.txt").read() == b"sigo igual", "y puede seguir usando la carpeta")
 t3.close()
+
+print("== Contraseñas visibles para el administrador")
+s, j, _ = admin.req("POST", "/api/admin/user/password", {"name": "eva"})
+check(s == 200 and j.get("password") == "reseteada1", "el admin ve la contraseña de eva")
+s, j, _ = admin.req("POST", "/api/admin/user/password", {"name": "bob"})
+check(s == 200 and j.get("password") == "bobpass1", "el admin ve la contraseña de bob")
+s, j, _ = admin.req("POST", "/api/admin/user/password", {"name": "eva"}, csrf=False)
+check(s == 403, "ver contraseñas exige la cabecera CSRF")
+s, j, _ = bob.req("POST", "/api/admin/user/password", {"name": "eva"})
+check(s == 403, "un usuario normal no puede ver contraseñas")
+conf = open(f"{BASE}/conf/users.conf").read()
+check("reseteada1" not in conf and "bobpass1" not in conf, "users.conf no guarda contraseñas en claro")
+check(os.path.exists(f"{BASE}/conf/master.key") and (os.stat(f"{BASE}/conf/master.key").st_mode & 0o077) == 0,
+      "clave maestra creada y privada")
+
+print("== Carpeta privada nueva con la sesión ya abierta")
+s, j, _ = admin.req("POST", "/api/admin/user", {"name": "bob", "password": "", "admin": "0", "enabled": "1",
+                                                "can_chpass": "1", "must_chpass": "0",
+                                                "mounts": mounts + f"\nenc|Cofre|{BASE}/share/cofre_bob"})
+check(s == 200, "el admin da a bob una carpeta privada")
+s, j, _ = bob.req("PUT", "/api/fs/put" + q(path="/Cofre/nota.txt"), data=b"hola cofre")
+check(s == 200, "bob la usa sin cerrar sesión (clave abierta con la contraseña guardada)")
+s, body, _ = bob.req("GET", "/api/fs/get" + q(path="/Cofre/nota.txt"), raw=True)
+check(body == b"hola cofre" and os.listdir(f"{BASE}/share/cofre_bob") != ["nota.txt"], "y se guarda cifrada")
+
+print("== Correo saliente (SMTP con TLS)")
+sys.path.insert(0, os.path.dirname(__file__))
+from fake_smtp import FakeSMTP
+CA = BASE + "/ca"
+smtps = FakeSMTP(465, CA + "/srv.pem", CA + "/srv.key", True, "nas@example.com", "abcdefghijklmnop")
+smtp_st = FakeSMTP(2525, CA + "/srv.pem", CA + "/srv.key", False, "nas@example.com", "abcdefghijklmnop")
+def wait_mail(srv, n, t=8):
+    for _ in range(t * 10):
+        if len(srv.msgs) >= n:
+            return True
+        time.sleep(0.1)
+    return False
+s, j, _ = Web().req("GET", "/api/status")
+check(s == 200 and j["recover_email"] is False and j["recover_admin"] is True and j["name"] == "PS5NAS",
+      "sin correo configurado solo se ofrece pedirla al admin")
+s, j, _ = admin.req("POST", "/api/admin/mail/test", {"to": "yo@example.com"})
+check(s == 400 and "configurado" in j["error"], "prueba sin configurar: error claro")
+s, j, _ = admin.req("POST", "/api/admin/settings", {"smtp_user": "nas@example.com", "smtp_pass": "abcd efgh ijkl mnop",
+                                                    "smtp_host": "localhost", "smtp_port": "465"})
+check(s == 200, "guardar cuenta de correo")
+conf = open(f"{BASE}/conf/users.conf").read()
+check("abcdefghijklmnop" not in conf and "abcd efgh" not in conf, "la contraseña de correo se guarda cifrada")
+s, j, _ = admin.req("GET", "/api/admin/settings")
+check(j["smtp_pass_set"] is True and "smtp_pass" not in j, "los ajustes no devuelven la contraseña de correo")
+s, j, _ = admin.req("POST", "/api/admin/mail/test", {"to": "yo@example.com"})
+check(s == 200 and len(smtps.msgs) == 1 and smtps.msgs[0]["to"] == ["yo@example.com"]
+      and smtps.msgs[0]["subject"] == "PS5NAS: correo de prueba", "correo de prueba por TLS directo (465) %s" % j)
+admin.req("POST", "/api/admin/settings", {"smtp_port": "2525"})
+s, j, _ = admin.req("POST", "/api/admin/mail/test", {"to": "yo@example.com"})
+check(s == 200 and len(smtp_st.msgs) == 1, "correo de prueba con STARTTLS (2525) %s" % j)
+admin.req("POST", "/api/admin/settings", {"smtp_host": "127.0.0.1"})
+s, j, _ = admin.req("POST", "/api/admin/mail/test", {"to": "yo@example.com"})
+check(s == 400 and len(smtp_st.msgs) == 1 and "no una IP" in j["error"],
+      "servidor por IP rechazado (no se podría comprobar su certificado)")
+untrusted = FakeSMTP(2526, CA + "/self.pem", CA + "/self.key", False, "nas@example.com", "abcdefghijklmnop")
+admin.req("POST", "/api/admin/settings", {"smtp_host": "localhost", "smtp_port": "2526"})
+s, j, _ = admin.req("POST", "/api/admin/mail/test", {"to": "yo@example.com"})
+check(s == 400 and not untrusted.msgs, "certificado de una CA no reconocida: rechazado")
+admin.req("POST", "/api/admin/settings", {"smtp_host": "localhost", "smtp_port": "465", "smtp_pass": "mala"})
+s, j, _ = admin.req("POST", "/api/admin/mail/test", {"to": "yo@example.com"})
+check(s == 400 and "contraseña de aplicación" in j["error"], "contraseña de correo mala: error claro")
+admin.req("POST", "/api/admin/settings", {"smtp_pass": "abcdefghijklmnop"})
+s, j, _ = admin.req("POST", "/api/admin/settings", {"smtp_user": "no es un correo"})
+check(s == 400, "cuenta de correo no válida rechazada")
+
+print("== Olvidé mi contraseña: por correo")
+s, j, _ = admin.req("POST", "/api/admin/user", mk({"mounts": f"enc|Privado|{PRIV}\nrw|Comun|{BASE}/share/inbox"}) |
+                    {"email": "Eva@Example.com"})
+check(s == 200, "el admin pone el correo de recuperación de eva")
+s, j, _ = admin.req("POST", "/api/admin/user", mk({"mounts": f"enc|Privado|{PRIV}"}) | {"email": "no-vale"})
+check(s == 400, "correo de recuperación no válido rechazado")
+s, j, _ = admin.req("GET", "/api/admin/users")
+check([u for u in j["users"] if u["name"] == "eva"][0]["email"] == "Eva@Example.com", "el correo aparece en la ficha")
+s, j, _ = Web().req("GET", "/api/status")
+check(j["recover_email"] is True, "con el correo configurado se ofrece la recuperación por correo")
+n0 = len(smtps.msgs)
+s, j, _ = Web().req("POST", "/api/forgot/email", {"user": "eva", "email": "otro@example.com"})
+check(s == 200, "correo equivocado: misma respuesta")
+s, j, _ = Web().req("POST", "/api/forgot/email", {"user": "nadie", "email": "eva@example.com"})
+check(s == 200, "usuario inexistente: misma respuesta")
+time.sleep(1)
+check(len(smtps.msgs) == n0, "y no se envía nada")
+s, j, _ = Web().req("POST", "/api/forgot/email", {"user": "eva", "email": "eva@example.com"})
+check(s == 200 and wait_mail(smtps, n0 + 1), "correo correcto (sin distinguir mayúsculas): se envía")
+m = smtps.msgs[-1]
+check(m["to"] == ["Eva@Example.com"] and "reseteada1" in m["body"] and "eva" in m["body"],
+      "el correo lleva su usuario y su contraseña actual")
+s, j, _ = Web().req("POST", "/api/forgot/email", {"user": "eva", "email": "eva@example.com"})
+time.sleep(1)
+check(len(smtps.msgs) == n0 + 1, "no se repite el envío enseguida")
+admin.req("POST", "/api/admin/settings", {"recover_email": "0"})
+s, j, _ = Web().req("POST", "/api/forgot/email", {"user": "eva", "email": "eva@example.com"})
+check(s == 403, "se puede desactivar la recuperación por correo")
+admin.req("POST", "/api/admin/settings", {"recover_email": "1"})
+
+print("== Olvidé mi contraseña: lo acepta un administrador")
+anon = Web()
+s, j, _ = anon.req("POST", "/api/forgot/request", {"user": "bob"})
+tok = j.get("token", "")
+check(s == 200 and len(tok) == 64, "bob pide su contraseña al admin")
+s, j, _ = anon.req("GET", "/api/forgot/status" + q(token=tok))
+check(j["state"] == "pending", "queda pendiente")
+s, j, _ = admin.req("GET", "/api/admin/requests")
+reqs = [r for r in j["requests"] if r["user"] == "bob"]
+check(len(reqs) == 1 and reqs[0]["pw_known"], "el admin ve la solicitud")
+s, j, _ = bob.req("GET", "/api/admin/requests")
+check(s == 403, "un usuario normal no ve las solicitudes")
+s, j, _ = admin.req("POST", "/api/admin/request", {"id": reqs[0]["id"], "action": "approve"})
+check(s == 200, "el admin la acepta")
+s, j, _ = anon.req("GET", "/api/forgot/status" + q(token=tok))
+check(j.get("state") == "approved" and j.get("password") == "bobpass1" and j.get("user") == "bob",
+      "y bob ve su contraseña en su pantalla")
+s, j, _ = anon.req("GET", "/api/forgot/status" + q(token=tok))
+check(j.get("state") == "unknown", "solo se entrega una vez")
+s, j, _ = anon.req("GET", "/api/forgot/status" + q(token="0" * 64))
+check(j.get("state") == "unknown" and "password" not in j, "un token inventado no da nada")
+s, j, _ = anon.req("POST", "/api/forgot/request", {"user": "eva"})
+tok2 = j["token"]
+s, j, _ = admin.req("GET", "/api/admin/requests")
+rid = [r for r in j["requests"] if r["user"] == "eva"][0]["id"]
+admin.req("POST", "/api/admin/request", {"id": rid, "action": "deny"})
+s, j, _ = anon.req("GET", "/api/forgot/status" + q(token=tok2))
+check(j.get("state") == "denied" and "password" not in j, "solicitud rechazada")
+s, j, _ = anon.req("POST", "/api/forgot/request", {"user": "fantasma"})
+s2, j2, _ = admin.req("GET", "/api/admin/requests")
+check(s == 200 and not any(r["user"] == "fantasma" for r in j2["requests"]),
+      "usuario inexistente: misma respuesta y no molesta al admin")
+
+print("== Mi cuenta: correo de recuperación")
+eva2 = Web()
+eva2.req("POST", "/api/login", {"user": "eva", "pass": "reseteada1"})
+s, j, _ = eva2.req("POST", "/api/me/email", {"email": "nuevo@example.com", "pass": "mala"})
+check(s == 403, "cambiar el correo exige su contraseña")
+s, j, _ = eva2.req("POST", "/api/me/email", {"email": "nuevo@example.com", "pass": "reseteada1"})
+s2, me, _ = eva2.req("GET", "/api/me")
+check(s == 200 and me["email"] == "nuevo@example.com", "eva cambia su correo de recuperación")
+s, j, _ = admin.req("POST", "/api/admin/user", {"name": "zoe", "password": "temporal9", "admin": "0", "enabled": "1",
+                                                "can_chpass": "1", "must_chpass": "1", "mounts": ""})
+zoe = Web()
+zoe.req("POST", "/api/login", {"user": "zoe", "pass": "temporal9"})
+s, j, _ = zoe.req("POST", "/api/me/password", {"old": "temporal9", "new": "deZoe123", "email": "zoe@example.com"})
+s2, me, _ = zoe.req("GET", "/api/me")
+check(s == 200 and me["email"] == "zoe@example.com" and not me["must_chpass"],
+      "al cambiar la contraseña la primera vez puede poner su correo")
+s, j, _ = admin.req("POST", "/api/admin/user/password", {"name": "zoe"})
+check(j.get("password") == "deZoe123", "el admin ve la contraseña que eligió zoe")
+
+print("== Recordar sesión y reinicio del servidor")
+import signal, subprocess, socket
+def restart():
+    pid = int(open(BASE + "/server.pid").read())
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.1)
+        except OSError:
+            break
+    p = subprocess.Popen(["./ps5share-linux", "-d", BASE + "/conf"], stdout=open(BASE + "/server2.log", "a"),
+                         stderr=subprocess.STDOUT)
+    open(BASE + "/server.pid", "w").write(str(p.pid))
+    for _ in range(100):
+        try:
+            for port in (8000, 2121, 2222):
+                socket.create_connection(("127.0.0.1", port), 1).close()
+            return
+        except OSError:
+            time.sleep(0.1)
+evr = Web()
+s, j, h = evr.req("POST", "/api/login", {"user": "eva", "pass": "reseteada1", "remember": "1"})
+check(s == 200 and "Max-Age=15552000" in h.get("Set-Cookie", ""), "recordar sesión: cookie de 180 días")
+s, j, h = eva2.req("POST", "/api/login", {"user": "eva", "pass": "reseteada1"})
+check(s == 200 and "Max-Age" not in h.get("Set-Cookie", ""), "sin recordar: cookie de sesión del navegador")
+token = [c.value for c in evr.jar if c.name == "ps5s"][0]
+sess = open(BASE + "/conf/sessions.conf").read()
+check("eva" in sess and token not in sess, "las sesiones recordadas se guardan sin el token")
+restart()
+s, j, _ = evr.req("GET", "/api/fs/list" + q(path="/Privado"))
+check(s == 200 and "log.txt" in [e["name"] for e in j.get("entries", [])],
+      "tras reiniciar, la sesión recordada sigue abierta y su carpeta privada también")
+s, j, _ = eva2.req("GET", "/api/me")
+check(s == 401, "la sesión no recordada se cierra al reiniciar")
+admin = Web()
+admin.req("POST", "/api/login", {"user": "admin", "pass": "adminpass"})
+s, j, _ = admin.req("POST", "/api/admin/mail/test", {"to": "yo@example.com"})
+check(s == 200, "la cuenta de correo sigue funcionando tras reiniciar")
+evr.req("POST", "/api/logout")
+check("eva" not in open(BASE + "/conf/sessions.conf").read(), "cerrar sesión la borra del disco")
+
+print("== Usuarios de versiones anteriores (contraseña aún desconocida)")
+conf = open(BASE + "/conf/users.conf").read()
+open(BASE + "/conf/users.conf", "w").write("\n".join(l for l in conf.split("\n") if not l.startswith("pw\teva\t")) + "\n")
+restart()
+admin = Web()
+admin.req("POST", "/api/login", {"user": "admin", "pass": "adminpass"})
+s, j, _ = admin.req("GET", "/api/admin/users")
+check([u for u in j["users"] if u["name"] == "eva"][0]["pw_known"] is False, "eva aparece con contraseña desconocida")
+s, j, _ = admin.req("POST", "/api/admin/user/password", {"name": "eva"})
+check(s == 404 and "próxima vez" in j["error"], "el admin ve por qué no se puede mostrar")
+anon = Web()
+s, j, _ = anon.req("POST", "/api/forgot/request", {"user": "eva"})
+s, j, _ = admin.req("GET", "/api/admin/requests")
+r = [r for r in j["requests"] if r["user"] == "eva"][0]
+check(r["pw_known"] is False, "la solicitud avisa de que no se conoce")
+s, j, _ = admin.req("POST", "/api/admin/request", {"id": r["id"], "action": "approve"})
+check(s == 409, "no se puede aceptar sin conocerla")
+t3, sf3 = sftp_connect("eva", "reseteada1")
+t3.close()
+s, j, _ = admin.req("GET", "/api/admin/users")
+check([u for u in j["users"] if u["name"] == "eva"][0]["pw_known"] is True,
+      "al entrar por SFTP se guarda su contraseña")
+s, j, _ = admin.req("POST", "/api/admin/request", {"id": r["id"], "action": "approve"})
+check(s == 200, "y ya se puede aceptar la solicitud")
+bob = Web()
+bob.req("POST", "/api/login", {"user": "bob", "pass": "bobpass1"})
+f = ftplib.FTP()
+f.connect(HOST, 2121, timeout=20)
+f.login("bob", "bobpass1")
+t, sf = sftp_connect("bob", "bobpass1")
 
 print("== Revocación en caliente")
 s, j, _ = admin.req("POST", "/api/admin/user", {"name": "bob", "password": "", "admin": "0",
@@ -537,7 +762,7 @@ check(s == 200, "guardar IP pasiva")
 s, j, _ = admin.req("POST", "/api/admin/settings", {"pasv_address": "1.2.3.4; rm"})
 check(s == 400, "IP pasiva inválida rechazada")
 s, body, h = admin.req("GET", "/", raw=True)
-check(s == 200 and b"PS5 Share" in body, "página web servida")
+check(s == 200 and b"PS5NAS" in body, "página web servida")
 
 print()
 print("RESULTADO:", "TODO OK" if FAILS == 0 else f"{FAILS} FALLOS")

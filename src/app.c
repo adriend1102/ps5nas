@@ -93,7 +93,7 @@ app_run(const char *confdir, void (*notify_fn)(const char *msg)) {
 
   int sftp_ok = s.sftp_enabled && !sftp_init(confdir);
 
-  int n = snprintf(msg, sizeof(msg), "ps5share %s\nWeb: http://%s:%u",
+  int n = snprintf(msg, sizeof(msg), "PS5NAS %s\nWeb: http://%s:%u",
                    VERSION_TAG, ip[0] ? ip : "?", s.http_port);
   if(sftp_ok) n += snprintf(msg + n, sizeof(msg) - n, "\nSFTP: %s:%u", ip[0] ? ip : "?", s.sftp_port);
   if(s.ftp_enabled) n += snprintf(msg + n, sizeof(msg) - n, "\nFTP: %s:%u", ip[0] ? ip : "?", s.ftp_port);

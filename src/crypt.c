@@ -122,6 +122,55 @@ crypt_unwrap(const uint8_t kek[CRYPT_KEY_LEN], const char *hex, uint8_t dek[CRYP
 }
 
 
+/* Secretos pequeños (contraseñas) cifrados con la clave maestra. */
+int
+crypt_seal(const uint8_t key[CRYPT_KEY_LEN], const char *aad, const void *plain,
+           size_t len, char *out_hex, size_t outlen) {
+  uint8_t blob[12 + CRYPT_SEAL_MAX + 16];
+  Aes aes;
+  int r = -1;
+
+  if(len > CRYPT_SEAL_MAX || outlen < (12 + len + 16) * 2 + 1) return -1;
+  cfg_random(blob, 12);
+  if(wc_AesInit(&aes, NULL, INVALID_DEVID)) return -1;
+  if(!wc_AesGcmSetKey(&aes, key, CRYPT_KEY_LEN) &&
+     !wc_AesGcmEncrypt(&aes, blob + 12, plain, (word32)len, blob, 12, blob + 12 + len, 16,
+                       (const byte*)aad, (word32)strlen(aad))) {
+    hex_enc(blob, 12 + len + 16, out_hex);
+    r = 0;
+  }
+  wc_AesFree(&aes);
+  wipe(blob, sizeof(blob));
+  return r;
+}
+
+
+int
+crypt_open(const uint8_t key[CRYPT_KEY_LEN], const char *aad, const char *hex,
+           char *out, size_t outlen) {
+  uint8_t blob[12 + CRYPT_SEAL_MAX + 16];
+  size_t hl = strlen(hex), n;
+  Aes aes;
+  int r = -1;
+
+  if(hl & 1 || hl / 2 < 28 || hl / 2 > sizeof(blob)) return -1;
+  n = hl / 2;
+  if(hex_dec(hex, blob, n)) return -1;
+  size_t len = n - 28;
+  if(len + 1 > outlen) return -1;
+  if(wc_AesInit(&aes, NULL, INVALID_DEVID)) return -1;
+  if(!wc_AesGcmSetKey(&aes, key, CRYPT_KEY_LEN) &&
+     !wc_AesGcmDecrypt(&aes, (byte*)out, blob + 12, (word32)len, blob, 12, blob + 12 + len, 16,
+                       (const byte*)aad, (word32)strlen(aad))) {
+    out[len] = 0;
+    r = 0;
+  }
+  wc_AesFree(&aes);
+  wipe(blob, sizeof(blob));
+  return r;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* Nombres: SIV con HMAC-SHA256 + AES-CTR, base32                      */
 /* ------------------------------------------------------------------ */

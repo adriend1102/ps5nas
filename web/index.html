@@ -3,57 +3,71 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PS5 Share</title>
+<title>PS5NAS</title>
 <style>
 :root{
   --bg:#f4f5f7;--panel:#ffffff;--ink:#16181d;--muted:#667085;--line:#e3e6ec;
-  --accent:#2156d6;--accent-ink:#ffffff;--danger:#c4321f;--ok:#1f8a4c;--chip:#eef2fb;
+  --accent:#2156d6;--accent-ink:#ffffff;--danger:#c4321f;--ok:#1f8a4c;--chip:#eef2fb;--warn:#a15c00;
   --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
 }
 @media (prefers-color-scheme:dark){
   :root{--bg:#0f1115;--panel:#171a21;--ink:#e8eaf0;--muted:#98a2b3;--line:#262b36;
-  --accent:#5b8cff;--accent-ink:#0b0d12;--danger:#ff6b57;--ok:#4cc38a;--chip:#1e2433;
+  --accent:#5b8cff;--accent-ink:#0b0d12;--danger:#ff6b57;--ok:#4cc38a;--chip:#1e2433;--warn:#f0b354;
   --shadow:none}
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);
   font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-button,input,select{font:inherit;color:inherit}
+button,input,select,textarea{font:inherit;color:inherit}
 a{color:var(--accent)}
 .hidden{display:none!important}
 header{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);
   border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
 .brand{font-weight:700;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
-.brand i{display:inline-block;width:22px;height:22px;border-radius:6px;background:var(--accent);
-  -webkit-mask:linear-gradient(#000 0 0);position:relative}
+.logo{width:26px;height:26px;flex:none}
 nav{display:flex;gap:4px;flex:1}
-nav button{background:none;border:0;padding:8px 12px;border-radius:8px;cursor:pointer;color:var(--muted)}
+nav button{background:none;border:0;padding:8px 12px;border-radius:8px;cursor:pointer;color:var(--muted);position:relative}
 nav button.on{background:var(--chip);color:var(--ink);font-weight:600}
+.badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:99px;background:var(--danger);color:#fff;
+  font-size:11px;font-weight:700;line-height:18px;text-align:center;margin-left:4px}
 .who{color:var(--muted);font-size:14px;white-space:nowrap}
 main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
 .pad{padding:18px}
 .btn{text-decoration:none;display:inline-block;border:1px solid var(--line);background:var(--panel);padding:7px 12px;border-radius:8px;
-  cursor:pointer;white-space:nowrap}
+  cursor:pointer;white-space:nowrap;color:var(--ink)}
 .btn:hover{border-color:var(--muted)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
 .btn.danger{color:var(--danger)}
+.btn.ok{color:var(--ok)}
 .btn.sm{padding:4px 8px;font-size:13px}
 .btn:disabled{opacity:.5;cursor:default}
-input[type=text],input[type=password],input[type=number],select{
+.linkbtn{background:none;border:0;padding:0;color:var(--accent);cursor:pointer;font-size:14px}
+input[type=text],input[type=password],input[type=number],input[type=email],select,textarea{
   border:1px solid var(--line);background:var(--bg);padding:8px 10px;border-radius:8px;width:100%}
-input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.pw{position:relative;display:block}
+.pw input{padding-right:40px}
+.pw .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:0;cursor:pointer;
+  width:32px;height:32px;border-radius:6px;color:var(--muted);display:grid;place-items:center}
+.pw .eye:hover{background:var(--chip);color:var(--ink)}
+.pw .eye svg{width:18px;height:18px}
 label.f{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .grow{flex:1}
 .err{color:var(--danger);font-size:14px;min-height:20px;margin-top:8px}
+.okmsg{color:var(--ok);font-size:14px;margin-top:8px}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);
-  color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;z-index:50;max-width:90vw}
+  color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;z-index:60;max-width:90vw}
 /* login */
 .center{min-height:100vh;display:grid;place-items:center;padding:16px}
-.login{width:100%;max-width:360px}
-.login h1{font-size:20px;margin:0 0 4px}
+.login{width:100%;max-width:380px}
+.login h1{font-size:20px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+.login h1 .logo{width:34px;height:34px}
 .login p{color:var(--muted);margin:0 0 8px;font-size:14px}
+.secret{font:600 20px/1.3 ui-monospace,Menlo,Consolas,monospace;background:var(--chip);border-radius:8px;
+  padding:10px 12px;word-break:break-all;margin:6px 0}
+.sep{border:0;border-top:1px solid var(--line);margin:18px 0}
 /* archivos */
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)}
 .crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;flex:1;min-width:200px;font-size:14px}
@@ -72,6 +86,7 @@ td.act{text-align:right;white-space:nowrap}
 .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;background:var(--chip);
   color:var(--muted);margin-left:6px;vertical-align:1px}
 .tag.rw{color:var(--ok)}
+.tag.warn{color:var(--warn)}
 .empty{padding:40px;text-align:center;color:var(--muted)}
 .drop{outline:2px dashed var(--accent);outline-offset:-6px}
 .up{padding:10px 14px;border-top:1px solid var(--line);font-size:13px}
@@ -85,27 +100,61 @@ td.act{text-align:right;white-space:nowrap}
 .ulist button:last-child{border-bottom:0}
 .ulist button.on{background:var(--chip)}
 .ulist small{color:var(--muted)}
+.reqs{margin-bottom:16px;border-color:var(--warn)}
+.req{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-top:1px solid var(--line)}
 .mrow{display:grid;grid-template-columns:1fr 2fr auto auto auto;gap:6px;align-items:center;margin-bottom:6px}
 @media (max-width:620px){.mrow{grid-template-columns:1fr 1fr;}}
 .check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px}
 .hint{font-size:13px;color:var(--muted);margin-top:6px}
+.curpw{display:flex;gap:8px;align-items:center;background:var(--chip);border-radius:8px;padding:6px 6px 6px 12px}
+.curpw .btn svg{width:16px;height:16px;vertical-align:-3px;display:inline-block}
+.curpw code{background:none;padding:0;font-size:15px;flex:1}
 h2{font-size:16px;margin:0 0 4px}
 /* modal */
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:grid;place-items:center;z-index:40;padding:16px}
-.modal .card{width:100%;max-width:560px;max-height:85vh;display:flex;flex-direction:column}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:grid;place-items:center;z-index:40;padding:16px}
+.modal > .card{width:100%;max-width:560px;max-height:90vh;display:flex;flex-direction:column}
 .dirs{overflow:auto;flex:1;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .dirs button{display:block;width:100%;text-align:left;background:none;border:0;
   border-bottom:1px solid var(--line);padding:9px 14px;cursor:pointer}
 .dirs button:hover{background:var(--chip)}
 code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;word-break:break-all}
+/* visor */
+#viewer > .card{max-width:1100px;height:90vh}
+.vhead{display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+.vhead strong{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vbody{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000;overflow:auto;border-radius:0 0 12px 12px}
+.vbody img,.vbody video{max-width:100%;max-height:100%;object-fit:contain}
+.vbody audio{width:90%}
+.vbody textarea{width:100%;height:100%;border:0;border-radius:0 0 12px 12px;resize:none;background:var(--panel);
+  font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;padding:14px;outline:none}
+.vbody.text{background:var(--panel)}
+.vbody .msg{color:#ccc;padding:20px;text-align:center}
 </style>
 </head>
 <body>
 
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="logo" viewBox="0 0 64 64">
+      <rect x="6" y="6" width="42" height="14" rx="3" fill="currentColor" opacity=".95"/>
+      <rect x="6" y="23" width="42" height="14" rx="3" fill="currentColor" opacity=".75"/>
+      <rect x="6" y="40" width="30" height="14" rx="3" fill="currentColor" opacity=".55"/>
+      <circle cx="13" cy="13" r="2" fill="#fff"/><circle cx="13" cy="30" r="2" fill="#fff"/><circle cx="13" cy="47" r="2" fill="#fff"/>
+      <rect x="20" y="12" width="18" height="2.5" rx="1.2" fill="#fff" opacity=".7"/>
+      <rect x="20" y="29" width="18" height="2.5" rx="1.2" fill="#fff" opacity=".7"/>
+      <path d="M44 41v-4a7 7 0 0 1 14 0v4" fill="none" stroke="currentColor" stroke-width="3.5"/>
+      <rect x="40" y="40" width="22" height="18" rx="3.5" fill="#f2b33d"/>
+      <circle cx="51" cy="48" r="2.4" fill="#5a3b00"/><rect x="50" y="49" width="2" height="5" rx="1" fill="#5a3b00"/>
+    </symbol>
+    <symbol id="eye" viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="eyeoff" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.1A10.9 10.9 0 0 1 12 5c7 0 11 7 11 7a18 18 0 0 1-3.2 4.1M6.6 6.6C3.2 8.5 1 12 1 12s4 7 11 7a10.6 10.6 0 0 0 5.4-1.4M9.9 9.9a3 3 0 0 0 4.2 4.2" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+  </defs>
+</svg>
+
 <!-- Configuración inicial -->
 <div id="v-setup" class="center hidden">
   <form class="card pad login" id="f-setup">
-    <h1>Bienvenido a PS5 Share</h1>
+    <h1><svg class="logo" style="color:var(--accent)"><use href="#logo"/></svg>Bienvenido a PS5NAS</h1>
     <p>Crea la cuenta de administrador. Con ella podrás dar de alta usuarios y decidir a qué carpetas accede cada uno.</p>
     <label class="f">Usuario</label><input type="text" name="user" autocomplete="username" required>
     <label class="f">Contraseña (mín. 6)</label><input type="password" name="pass" autocomplete="new-password" required>
@@ -118,40 +167,99 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
 <!-- Login -->
 <div id="v-login" class="center hidden">
   <form class="card pad login" id="f-login">
-    <h1>PS5 Share</h1>
+    <h1><svg class="logo" style="color:var(--accent)"><use href="#logo"/></svg>PS5NAS</h1>
     <p>Inicia sesión para acceder a tus carpetas.</p>
     <label class="f">Usuario</label><input type="text" name="user" autocomplete="username" required>
     <label class="f">Contraseña</label><input type="password" name="pass" autocomplete="current-password" required>
+    <label class="check"><input type="checkbox" name="remember"> Recordar sesión en este dispositivo</label>
     <div class="err" id="e-login"></div>
     <button class="btn primary" style="width:100%;margin-top:6px">Entrar</button>
+    <div style="text-align:center;margin-top:14px"><button type="button" class="linkbtn" id="b-forgot">¿Olvidaste tu contraseña?</button></div>
   </form>
 </div>
 
-<!-- Cambio de contraseña -->
+<!-- Olvidé mi contraseña -->
+<div id="v-forgot" class="center hidden">
+  <div class="card pad login">
+    <h1>Recuperar contraseña</h1>
+    <form id="f-forgot-mail">
+      <p>Escribe tu usuario y el correo de recuperación de tu cuenta. Te enviaremos tu contraseña a ese correo.</p>
+      <label class="f">Usuario</label><input type="text" name="user" autocomplete="username" required>
+      <label class="f">Correo de recuperación</label><input type="email" name="email" autocomplete="email" required>
+      <div class="err" id="e-forgot-mail"></div>
+      <button class="btn primary" style="width:100%;margin-top:6px">Enviarme la contraseña</button>
+    </form>
+    <hr class="sep" id="forgot-sep">
+    <form id="f-forgot-admin">
+      <p id="forgot-admin-p">¿No tienes correo de recuperación? Pide a un administrador que te la dé.</p>
+      <label class="f">Usuario</label><input type="text" name="user" autocomplete="username" required>
+      <div class="err" id="e-forgot-admin"></div>
+      <button class="btn" style="width:100%;margin-top:6px">Pedírsela a un administrador</button>
+    </form>
+    <div id="forgot-none" class="hint hidden">La recuperación de contraseñas está desactivada. Habla con el administrador de la consola.</div>
+    <button type="button" class="btn" id="b-forgot-back" style="width:100%;margin-top:14px">Volver</button>
+  </div>
+</div>
+
+<!-- Esperando al administrador -->
+<div id="v-waiting" class="center hidden">
+  <div class="card pad login">
+    <h1>Solicitud enviada</h1>
+    <div id="wait-pending">
+      <p>Un administrador tiene que aceptarla. Deja esta página abierta (o vuelve luego desde este mismo dispositivo): en cuanto la acepte, verás aquí tu contraseña.</p>
+      <div class="bar"><i style="width:35%;animation:none"></i></div>
+    </div>
+    <div id="wait-done" class="hidden">
+      <p>El administrador ha aceptado tu solicitud. Tu contraseña es:</p>
+      <div class="secret" id="wait-pass"></div>
+      <p>Apúntala o, mejor, cámbiala desde «Mi cuenta» al entrar.</p>
+      <button type="button" class="btn primary" id="b-wait-login" style="width:100%">Entrar ahora</button>
+    </div>
+    <div id="wait-denied" class="hidden"><p>La solicitud se ha rechazado o ha caducado. Habla con el administrador.</p></div>
+    <button type="button" class="btn" id="b-wait-cancel" style="width:100%;margin-top:10px">Volver al inicio de sesión</button>
+  </div>
+</div>
+
+<!-- Cambio de contraseña / Mi cuenta -->
 <div id="v-chpass" class="center hidden">
-  <form class="card pad login" id="f-chpass">
-    <h1>Cambiar contraseña</h1>
-    <p id="chpass-msg">Elige una contraseña nueva que solo sepas tú.</p>
-    <label class="f">Contraseña actual</label><input type="password" name="old" autocomplete="current-password" required>
-    <label class="f">Nueva contraseña (mín. 6)</label><input type="password" name="new" autocomplete="new-password" required minlength="6">
-    <label class="f">Repite la nueva contraseña</label><input type="password" name="new2" autocomplete="new-password" required>
-    <div class="err" id="e-chpass"></div>
-    <button class="btn primary" style="width:100%;margin-top:6px">Guardar contraseña</button>
-    <button type="button" class="btn" id="b-chpass-cancel" style="width:100%;margin-top:8px">Cancelar</button>
-  </form>
+  <div class="card pad login">
+    <form id="f-chpass">
+      <h1 id="chpass-title">Mi cuenta</h1>
+      <p id="chpass-msg">Elige una contraseña nueva.</p>
+      <label class="f">Contraseña actual</label><input type="password" name="old" autocomplete="current-password" required>
+      <label class="f">Nueva contraseña (mín. 6)</label><input type="password" name="new" autocomplete="new-password" required minlength="6">
+      <label class="f">Repite la nueva contraseña</label><input type="password" name="new2" autocomplete="new-password" required>
+      <div id="chpass-email-box">
+        <label class="f">Correo de recuperación (por si la olvidas)</label>
+        <input type="email" name="email" autocomplete="email" placeholder="tucorreo@ejemplo.com">
+      </div>
+      <div class="err" id="e-chpass"></div>
+      <button class="btn primary" style="width:100%;margin-top:6px">Guardar contraseña</button>
+    </form>
+    <form id="f-myemail" class="hidden">
+      <hr class="sep">
+      <h2>Correo de recuperación</h2>
+      <div class="hint">Si olvidas tu contraseña, te la enviaremos a este correo.</div>
+      <label class="f">Correo</label><input type="email" name="email" autocomplete="email" placeholder="tucorreo@ejemplo.com">
+      <label class="f">Tu contraseña actual (para confirmar)</label><input type="password" name="pass" autocomplete="current-password" required>
+      <div class="err" id="e-myemail"></div>
+      <button class="btn" style="width:100%;margin-top:6px">Guardar correo</button>
+    </form>
+    <button type="button" class="btn" id="b-chpass-cancel" style="width:100%;margin-top:10px">Volver</button>
+  </div>
 </div>
 
 <!-- App -->
 <div id="v-app" class="hidden">
   <header>
-    <div class="brand"><i></i><span class="hide-sm">PS5 Share</span></div>
+    <div class="brand"><svg class="logo" style="color:var(--accent)"><use href="#logo"/></svg><span class="hide-sm">PS5NAS</span></div>
     <nav>
       <button data-tab="files" class="on">Archivos</button>
-      <button data-tab="users" class="adm">Usuarios</button>
+      <button data-tab="users" class="adm">Usuarios<span class="badge hidden" id="reqbadge"></span></button>
       <button data-tab="settings" class="adm">Ajustes</button>
     </nav>
-    <span class="who" id="who"></span>
-    <button class="btn sm hidden" id="b-chpass">Contraseña</button>
+    <span class="who hide-sm" id="who"></span>
+    <button class="btn sm" id="b-account">Mi cuenta</button>
     <button class="btn sm" id="b-logout">Salir</button>
   </header>
 
@@ -160,6 +268,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
     <section id="t-files" class="card">
       <div class="toolbar">
         <div class="crumbs" id="crumbs"></div>
+        <button class="btn sm" id="b-newfile">Nuevo archivo</button>
         <button class="btn sm" id="b-mkdir">Nueva carpeta</button>
         <button class="btn sm primary" id="b-upload">Subir archivos</button>
         <input type="file" id="i-upload" multiple class="hidden">
@@ -170,6 +279,10 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
 
     <!-- Usuarios -->
     <section id="t-users" class="hidden">
+      <div class="card reqs hidden" id="reqs">
+        <div class="toolbar" style="border:0"><strong class="grow">Solicitudes de recuperación de contraseña</strong></div>
+        <div id="reqlist"></div>
+      </div>
       <div class="grid">
         <div class="card">
           <div class="toolbar"><strong class="grow">Usuarios</strong>
@@ -181,8 +294,15 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
           <div class="hint">Cada usuario solo ve las carpetas que le asignes aquí, con el nombre que elijas.</div>
           <label class="f">Nombre de usuario</label>
           <input type="text" name="name" required pattern="[A-Za-z0-9_.\-]{1,32}" title="Letras, números, punto, guion y guion bajo">
+          <div id="u-curpw-box">
+            <label class="f">Contraseña actual</label>
+            <div class="curpw"><code id="u-curpw">••••••••</code>
+              <button type="button" class="btn sm" id="b-showpw" title="Ver contraseña"><svg><use href="#eye"/></svg></button></div>
+          </div>
           <label class="f" id="u-passlabel">Contraseña</label>
           <input type="password" name="password" autocomplete="new-password">
+          <label class="f">Correo de recuperación</label>
+          <input type="email" name="email" placeholder="opcional: para «¿Olvidaste tu contraseña?»">
           <label class="check"><input type="checkbox" name="enabled" checked> Cuenta activa</label>
           <label class="check"><input type="checkbox" name="admin"> Administrador (puede gestionar usuarios y ajustes)</label>
           <label class="check"><input type="checkbox" name="can_chpass" checked> Puede cambiar su propia contraseña desde la web</label>
@@ -192,10 +312,10 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
           <div id="mounts"></div>
           <button type="button" class="btn sm" id="b-addmount">+ Añadir carpeta</button>
           <div class="hint">«Nombre» es cómo la verá el usuario. «Ruta» es la carpeta real en la PS5 (p. ej. <code>/mnt/ext0/Peliculas</code>).</div>
-          <div class="hint"><strong>Privada cifrada:</strong> todo lo que guarde ahí se cifra con una clave que sale de su contraseña.
-            Ni tú ni nadie con acceso al disco puede ver los nombres ni el contenido. Debe ser una carpeta nueva o vacía (se crea sola),
-            solo se usa por SFTP y desde la web, y <strong>si le cambias tú la contraseña, pierde para siempre lo que tenga cifrado</strong>.
-            Para que de verdad solo la conozca él, marca «Obligarle a cambiarla».</div>
+          <div class="hint"><strong>Privada cifrada:</strong> los nombres y el contenido se guardan cifrados en el disco, así que nadie puede verlos
+            mirando el SSD, ni otros usuarios, ni tú desde tu cuenta. El usuario la usa con normalidad por SFTP y desde la web
+            (ver, editar, subir, crear carpetas y borrar). Tiene que ser una carpeta nueva o vacía (se crea sola).
+            Si le cambias la contraseña, sus archivos se conservan.</div>
 
           <div class="err" id="e-user"></div>
           <div class="row" style="margin-top:8px">
@@ -209,8 +329,11 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
 
     <!-- Ajustes -->
     <section id="t-settings" class="hidden">
-      <form class="card pad" id="f-settings" style="max-width:640px">
-        <h2>Ajustes del servidor</h2>
+      <form class="card pad" id="f-settings" style="max-width:680px">
+        <h2>Cómo conectarse</h2>
+        <div id="ifaces" class="hint"></div>
+
+        <h2 style="margin-top:22px">Ajustes del servidor</h2>
         <div class="hint">Los cambios de puertos y la activación de SFTP/FTP se aplican al volver a cargar el payload.</div>
         <label class="f">Puerto web</label><input type="number" name="http_port" min="1" max="65535">
 
@@ -219,6 +342,26 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
         <label class="f">Puerto SFTP</label><input type="number" name="sftp_port" min="1" max="65535">
         <div class="hint">Huella de la clave del servidor. La primera vez que conectes, el cliente te la enseñará: comprueba que coincide.</div>
         <div class="hint" id="fps"></div>
+
+        <h2 style="margin-top:22px">Recuperar contraseñas</h2>
+        <label class="check"><input type="checkbox" name="recover_email"> Permitir «¿Olvidaste tu contraseña?» por correo (envía su contraseña a su correo de recuperación)</label>
+        <label class="check"><input type="checkbox" name="recover_admin"> Permitir pedírsela a un administrador (la aceptas en «Usuarios»)</label>
+        <label class="f">Cuenta de Gmail que envía los correos</label>
+        <input type="email" name="smtp_user" placeholder="tucuenta@gmail.com">
+        <label class="f">Contraseña de aplicación de Google <span id="smtp-pass-state"></span></label>
+        <input type="password" name="smtp_pass" autocomplete="new-password" placeholder="16 letras, p. ej. abcd efgh ijkl mnop">
+        <div class="hint">No es la contraseña normal de Gmail. Créala en <code>myaccount.google.com/apppasswords</code>
+          (hace falta tener la verificación en dos pasos activada). Déjala vacía para no cambiarla.</div>
+        <div class="row" style="margin-top:8px">
+          <div class="grow"><label class="f" style="margin-top:0">Nombre del remitente</label><input type="text" name="smtp_from_name" maxlength="60"></div>
+          <div class="grow"><label class="f" style="margin-top:0">Servidor</label><input type="text" name="smtp_host"></div>
+          <div style="width:110px"><label class="f" style="margin-top:0">Puerto</label><input type="number" name="smtp_port" min="1" max="65535"></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input type="email" id="i-testmail" class="grow" placeholder="correo para la prueba" style="width:auto">
+          <button type="button" class="btn" id="b-testmail">Enviar correo de prueba</button>
+        </div>
+        <div id="m-testmail"></div>
 
         <h2 style="margin-top:22px">FTP (sin cifrar)</h2>
         <label class="check"><input type="checkbox" name="ftp_enabled"> Activar FTP (las contraseñas viajan sin cifrar por tu red)</label>
@@ -232,9 +375,6 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
         <div class="hint">Si usas otra app que lleve su propio ftpsrv (p. ej. Machete IA, que usa el 2121), elige otro puerto FTP, como 2122.</div>
         <div class="err" id="e-settings"></div>
         <button class="btn primary">Guardar ajustes</button>
-
-        <h2 style="margin-top:26px">Cómo conectarse</h2>
-        <div id="ifaces" class="hint"></div>
       </form>
     </section>
   </main>
@@ -260,11 +400,32 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
   </div>
 </div>
 
+<!-- Visor / editor -->
+<div class="modal hidden" id="viewer">
+  <div class="card">
+    <div class="vhead">
+      <button class="btn sm" id="v-prev" title="Anterior">‹</button>
+      <button class="btn sm" id="v-next" title="Siguiente">›</button>
+      <strong id="v-name"></strong>
+      <span class="tag hidden" id="v-dirty">sin guardar</span>
+      <button class="btn sm primary hidden" id="v-save">Guardar</button>
+      <button class="btn sm hidden" id="v-edit">Editar como texto</button>
+      <a class="btn sm" id="v-dl" href="#">Descargar</a>
+      <button class="btn sm" id="v-close">Cerrar</button>
+    </div>
+    <div class="vbody" id="v-body"></div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = (s, el=document) => el.querySelector(s);
 const $$ = (s, el=document) => [...el.querySelectorAll(s)];
-let ME = null, CWD = "/", USERS = [], EDIT = null;
+let ME = null, CWD = "/", USERS = [], EDIT = null, STATUS = {};
+const LS = {
+  get(k){ try { return localStorage.getItem(k); } catch(e) { return null; } },
+  set(k, v){ try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch(e) {} }
+};
 
 function el(tag, attrs={}, ...kids){
   const e = document.createElement(tag);
@@ -276,10 +437,15 @@ function el(tag, attrs={}, ...kids){
   for (const k of kids.flat()) if (k != null) e.append(k instanceof Node ? k : document.createTextNode(k));
   return e;
 }
+function svgIcon(id){
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const u = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  u.setAttribute("href", "#" + id); s.append(u); return s;
+}
 function toast(msg){
   $$(".toast").forEach(x => x.remove());
   const t = el("div", {class:"toast"}, msg);
-  document.body.append(t); setTimeout(()=>t.remove(), 3000);
+  document.body.append(t); setTimeout(()=>t.remove(), 3500);
 }
 function fmtSize(n){
   if (n < 1024) return n + " B";
@@ -301,22 +467,48 @@ async function api(method, url, body){
   const r = await fetch(url, opt);
   let j = {};
   try { j = await r.json(); } catch(e) {}
-  if (r.status === 401 && !url.startsWith("/api/login")) { showLogin(); throw new Error(j.error || "Sesión caducada"); }
+  if (r.status === 401 && url.startsWith("/api/") && !url.startsWith("/api/login")) { showLogin(); throw new Error(j.error || "Sesión caducada"); }
   if (!r.ok) throw new Error(j.error || ("Error " + r.status));
   return j;
 }
 
+/* Ojo para ver/ocultar en todos los campos de contraseña */
+function addEye(inp){
+  if (inp.parentNode.classList.contains("pw")) return;
+  const wrap = el("span", {class:"pw"});
+  inp.parentNode.insertBefore(wrap, inp); wrap.append(inp);
+  const b = el("button", {type:"button", class:"eye", title:"Mostrar u ocultar", tabindex:"-1"});
+  b.append(svgIcon("eye"));
+  b.onclick = () => {
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    b.textContent = ""; b.append(svgIcon(show ? "eyeoff" : "eye"));
+  };
+  wrap.append(b);
+}
+$$("input[type=password]").forEach(addEye);
+function resetEyes(root){
+  $$(".pw input", root).forEach(i => { if (i.type === "text") i.parentNode.querySelector(".eye").click(); });
+}
+
 /* ---------- Vistas ---------- */
-function show(id){ for (const v of ["v-setup","v-login","v-app","v-chpass"]) $("#"+v).classList.toggle("hidden", v !== id); }
-function showLogin(){ show("v-login"); setTimeout(()=>$("#f-login [name=user]").focus(), 50); }
+const VIEWS = ["v-setup","v-login","v-app","v-chpass","v-forgot","v-waiting"];
+function show(id){ for (const v of VIEWS) $("#"+v).classList.toggle("hidden", v !== id); }
+function showLogin(){
+  show("v-login");
+  const f = $("#f-login");
+  if (/PlayStation/i.test(navigator.userAgent) && !LS.get("remember-set")) f.remember.checked = true;
+  setTimeout(()=>f.user.focus(), 50);
+}
 
 async function boot(){
+  try { STATUS = await api("GET", "/api/status"); } catch(e) { STATUS = {}; }
+  if (STATUS.setup) { show("v-setup"); return; }
+  if (LS.get("recover-token")) { showWaiting(); return; }
   try {
-    const st = await api("GET", "/api/status");
-    if (st.setup) { show("v-setup"); return; }
     ME = await api("GET", "/api/me");
     startApp();
-  } catch(e) { if (!$("#v-setup").classList.contains("hidden")) return; showLogin(); }
+  } catch(e) { showLogin(); }
 }
 
 $("#f-setup").addEventListener("submit", async ev => {
@@ -336,8 +528,9 @@ $("#f-login").addEventListener("submit", async ev => {
   const f = ev.target;
   $("#e-login").textContent = "";
   try {
-    await api("POST", "/api/login", form({user:f.user.value, pass:f.pass.value}));
-    f.pass.value = "";
+    await api("POST", "/api/login", form({user:f.user.value, pass:f.pass.value, remember: f.remember.checked ? "1" : "0"}));
+    LS.set("remember-set", "1");
+    f.pass.value = ""; resetEyes(f);
     ME = await api("GET", "/api/me");
     startApp();
   } catch(e) { $("#e-login").textContent = e.message; }
@@ -345,43 +538,133 @@ $("#f-login").addEventListener("submit", async ev => {
 
 $("#b-logout").onclick = async () => { try { await api("POST", "/api/logout"); } catch(e) {} location.reload(); };
 
-function showChpass(forced){
-  const f = $("#f-chpass"); f.reset(); $("#e-chpass").textContent = "";
+/* ---------- Recuperar contraseña ---------- */
+$("#b-forgot").onclick = async () => {
+  try { STATUS = await api("GET", "/api/status"); } catch(e) {}
+  const u = $("#f-login").user.value;
+  for (const f of [$("#f-forgot-mail"), $("#f-forgot-admin")]) { f.reset(); f.user.value = u; }
+  $("#e-forgot-mail").textContent = $("#e-forgot-admin").textContent = "";
+  $("#f-forgot-mail").classList.toggle("hidden", !STATUS.recover_email);
+  $("#f-forgot-admin").classList.toggle("hidden", !STATUS.recover_admin);
+  $("#forgot-sep").classList.toggle("hidden", !(STATUS.recover_email && STATUS.recover_admin));
+  $("#forgot-admin-p").textContent = STATUS.recover_email
+    ? "¿No tienes correo de recuperación? Pide a un administrador que te la dé."
+    : "Pide a un administrador que te dé tu contraseña. Cuando la acepte, la verás en esta pantalla.";
+  $("#forgot-none").classList.toggle("hidden", !!(STATUS.recover_email || STATUS.recover_admin));
+  show("v-forgot");
+};
+$("#b-forgot-back").onclick = () => showLogin();
+$("#f-forgot-mail").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  $("#e-forgot-mail").textContent = "";
+  try {
+    await api("POST", "/api/forgot/email", form({user:f.user.value.trim(), email:f.email.value.trim()}));
+    showLogin();
+    toast("Si el usuario y el correo coinciden, en unos minutos recibirás tu contraseña (mira también en spam).");
+  } catch(e) { $("#e-forgot-mail").textContent = e.message; }
+});
+$("#f-forgot-admin").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  $("#e-forgot-admin").textContent = "";
+  try {
+    const r = await api("POST", "/api/forgot/request", form({user:f.user.value.trim()}));
+    LS.set("recover-token", r.token);
+    showWaiting();
+  } catch(e) { $("#e-forgot-admin").textContent = e.message; }
+});
+
+let WAIT_TIMER = null;
+function showWaiting(){
+  show("v-waiting");
+  $("#wait-pending").classList.remove("hidden");
+  $("#wait-done").classList.add("hidden"); $("#wait-denied").classList.add("hidden");
+  pollWaiting();
+}
+async function pollWaiting(){
+  clearTimeout(WAIT_TIMER);
+  const tok = LS.get("recover-token");
+  if (!tok || $("#v-waiting").classList.contains("hidden")) return;
+  let r;
+  try { r = await api("GET", "/api/forgot/status?token=" + encodeURIComponent(tok)); }
+  catch(e) { WAIT_TIMER = setTimeout(pollWaiting, 5000); return; }
+  if (r.state === "pending") { WAIT_TIMER = setTimeout(pollWaiting, 4000); return; }
+  LS.set("recover-token", null);
+  $("#wait-pending").classList.add("hidden");
+  if (r.state === "approved") {
+    $("#wait-pass").textContent = r.password;
+    $("#wait-done").classList.remove("hidden");
+    $("#b-wait-login").onclick = () => {
+      const f = $("#f-login"); f.user.value = r.user; f.pass.value = r.password;
+      showLogin();
+    };
+  } else {
+    $("#wait-denied").classList.remove("hidden");
+  }
+}
+$("#b-wait-cancel").onclick = () => { LS.set("recover-token", null); clearTimeout(WAIT_TIMER); showLogin(); };
+
+/* ---------- Mi cuenta ---------- */
+function showAccount(forced){
+  const f = $("#f-chpass"); f.reset(); resetEyes(f); $("#e-chpass").textContent = "";
+  const fe = $("#f-myemail"); fe.reset(); resetEyes(fe); $("#e-myemail").textContent = "";
+  $("#chpass-title").textContent = forced ? "Cambiar contraseña" : "Mi cuenta";
   $("#chpass-msg").textContent = forced
     ? "Antes de continuar tienes que cambiar la contraseña que te dio el administrador. Hasta que lo hagas no podrás entrar por SFTP."
-    : "Elige una contraseña nueva que solo sepas tú.";
+    : "Cambia tu contraseña. Recuerda usar la nueva también en tus apps SFTP.";
+  f.classList.toggle("hidden", !forced && !ME.can_chpass);
+  $("#chpass-email-box").classList.toggle("hidden", !forced);
+  f.email.value = ME.email || "";
+  fe.classList.toggle("hidden", forced);
+  fe.email.value = ME.email || "";
   $("#b-chpass-cancel").classList.toggle("hidden", forced);
-  show("v-chpass"); setTimeout(()=>f.old.focus(), 50);
+  show("v-chpass");
 }
-$("#b-chpass").onclick = () => showChpass(false);
+$("#b-account").onclick = () => showAccount(false);
 $("#b-chpass-cancel").onclick = () => show("v-app");
 $("#f-chpass").addEventListener("submit", async ev => {
   ev.preventDefault();
   const f = ev.target;
   if (f.new.value !== f.new2.value) { $("#e-chpass").textContent = "Las contraseñas nuevas no coinciden"; return; }
+  const data = {old:f.old.value, new:f.new.value};
+  if (ME.must_chpass) data.email = f.email.value.trim();
   try {
-    await api("POST", "/api/me/password", form({old:f.old.value, new:f.new.value}));
+    await api("POST", "/api/me/password", form(data));
     ME = await api("GET", "/api/me");
     toast("Contraseña cambiada. Úsala también en tus apps SFTP.");
     startApp();
   } catch(e) { $("#e-chpass").textContent = e.message; }
 });
+$("#f-myemail").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  try {
+    await api("POST", "/api/me/email", form({email:f.email.value.trim(), pass:f.pass.value}));
+    ME = await api("GET", "/api/me");
+    f.pass.value = "";
+    toast("Correo de recuperación guardado");
+    show("v-app");
+  } catch(e) { $("#e-myemail").textContent = e.message; }
+});
 
 function startApp(){
-  if (ME.must_chpass) { showChpass(true); return; }
+  if (ME.must_chpass) { showAccount(true); return; }
   show("v-app");
-  $("#b-chpass").classList.toggle("hidden", !ME.can_chpass);
   $("#who").textContent = ME.user + (ME.admin ? " · admin" : "");
   $$(".adm").forEach(b => b.classList.toggle("hidden", !ME.admin));
   openTab("files");
+  if (ME.admin) pollRequests();
 }
 
 $$("nav button").forEach(b => b.onclick = () => openTab(b.dataset.tab));
+let TAB = "files";
 function openTab(t){
+  TAB = t;
   $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   for (const s of ["files","users","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
   if (t === "files") loadDir(CWD);
-  if (t === "users") loadUsers();
+  if (t === "users") { loadUsers(); pollRequests(); }
   if (t === "settings") loadSettings();
 }
 
@@ -397,7 +680,7 @@ async function loadDir(path){
     return;
   }
   renderCrumbs(); renderList();
-  $("#b-mkdir").disabled = $("#b-upload").disabled = !CUR.rw;
+  $("#b-mkdir").disabled = $("#b-upload").disabled = $("#b-newfile").disabled = !CUR.rw;
 }
 
 function renderCrumbs(){
@@ -410,9 +693,29 @@ function renderCrumbs(){
   }
 }
 
+const EXT = s => (s.match(/\.([^.]+)$/) || ["",""])[1].toLowerCase();
+const KIND = {
+  image: ["jpg","jpeg","png","gif","webp","bmp","svg"],
+  video: ["mp4","m4v","webm","mov","mkv"],
+  audio: ["mp3","m4a","aac","ogg","oga","opus","flac","wav"],
+  pdf: ["pdf"],
+  text: ["txt","md","markdown","log","json","xml","csv","tsv","ini","cfg","conf","yml","yaml","toml","html","htm","css",
+         "js","ts","py","c","h","cpp","hpp","cs","java","sh","bat","ps1","sql","srt","vtt","ass","nfo","env","gitignore","properties","lua"]
+};
+function kindOf(name){
+  const e = EXT(name);
+  for (const k in KIND) if (KIND[k].includes(e)) return k;
+  return null;
+}
+function fileIcon(it){
+  if (it.dir) return "📁";
+  return {image:"🖼️", video:"🎬", audio:"🎵", pdf:"📕", text:"📝"}[kindOf(it.name)] || "📄";
+}
+
 function renderList(){
   const box = $("#flist"); box.textContent = "";
   const items = [...CUR.entries].sort((a,b)=> (b.dir - a.dir) || a.name.localeCompare(b.name, undefined, {numeric:true}));
+  CUR.sorted = items;
   if (!items.length){
     box.append(el("div", {class:"empty"}, CUR.root
       ? "No tienes carpetas asignadas. Pide al administrador que te dé acceso."
@@ -423,14 +726,17 @@ function renderList(){
   for (const it of items){
     const p = joinPath(CWD, it.name);
     const acts = el("td", {class:"act"});
-    if (!it.dir) acts.append(el("a", {class:"btn sm", href:"/api/fs/get?dl=1&path="+encodeURIComponent(p)}, "Descargar"), " ");
+    if (!it.dir) {
+      if (kindOf(it.name) === "text" && CUR.rw) acts.append(el("button", {class:"btn sm", onclick:()=>openViewer(it, true)}, "Editar"), " ");
+      acts.append(el("a", {class:"btn sm hide-sm", href:"/api/fs/get?dl=1&path="+encodeURIComponent(p)}, "Descargar"), " ");
+    }
     if (CUR.rw){
       acts.append(el("button", {class:"btn sm", onclick:()=>renameItem(it)}, "Renombrar"), " ",
                   el("button", {class:"btn sm danger", onclick:()=>deleteItem(it)}, "Borrar"));
     }
     const name = el("td", {class:"name", onclick:()=> it.locked ? toast("Cierra sesión y vuelve a entrar para abrir tu carpeta privada")
-                                                     : it.dir ? loadDir(p) : window.open("/api/fs/get?path="+encodeURIComponent(p), "_blank")},
-      el("span", {class:"ico"}, it.dir ? "📁" : "📄"), it.name,
+                                                     : it.dir ? loadDir(p) : openViewer(it, false)},
+      el("span", {class:"ico"}, fileIcon(it)), it.name,
       CUR.root ? el("span", {class:"tag"+(it.rw?" rw":"")}, it.enc ? "🔒 privada" : (it.rw ? "lectura y escritura" : "solo lectura")) : null,
       it.locked ? el("span", {class:"tag", style:"color:var(--danger)"}, "cierra sesión y vuelve a entrar para abrirla") : null,
       it.missing ? el("span", {class:"tag", style:"color:var(--danger)"}, "no disponible") : null);
@@ -442,10 +748,15 @@ function renderList(){
     el("th",{class:"hide-sm",style:"text-align:right"},"Tamaño"), el("th",{class:"hide-sm",style:"text-align:right"},"Modificado"), el("th"))), tb));
 }
 
+function validName(n){
+  if (!n) return false;
+  if (n.includes("/")) { toast("El nombre no puede contener «/»"); return false; }
+  if (n === "." || n === "..") { toast("Nombre no válido"); return false; }
+  return true;
+}
 async function renameItem(it){
   const n = prompt("Nuevo nombre:", it.name);
-  if (!n || n === it.name) return;
-  if (n.includes("/")) return toast("El nombre no puede contener «/»");
+  if (!n || n === it.name || !validName(n)) return;
   try { await api("POST", "/api/fs/rename?" + form({from:joinPath(CWD,it.name), to:joinPath(CWD,n)})); loadDir(CWD); }
   catch(e) { toast(e.message); }
 }
@@ -456,10 +767,20 @@ async function deleteItem(it){
 }
 $("#b-mkdir").onclick = async () => {
   const n = prompt("Nombre de la carpeta:");
-  if (!n) return;
-  if (n.includes("/")) return toast("El nombre no puede contener «/»");
+  if (!validName(n)) return;
   try { await api("POST", "/api/fs/mkdir?" + form({path:joinPath(CWD,n)})); loadDir(CWD); }
   catch(e) { toast(e.message); }
+};
+$("#b-newfile").onclick = async () => {
+  let n = prompt("Nombre del archivo de texto:", "nuevo.txt");
+  if (!validName(n)) return;
+  if (CUR.entries.some(e => e.name === n)) return toast("Ya existe un elemento con ese nombre");
+  try {
+    await putFile(joinPath(CWD, n), new Blob([""]), ()=>{});
+    await loadDir(CWD);
+    const it = CUR.entries.find(e => e.name === n);
+    if (it) openViewer(it, true);
+  } catch(e) { toast(e.message); }
 };
 
 $("#b-upload").onclick = () => $("#i-upload").click();
@@ -498,12 +819,128 @@ async function uploadFiles(files){
   if (CWD === dir) loadDir(dir);
 }
 
+/* ---------- Visor y editor ---------- */
+const TEXT_MAX = 5 * 1024 * 1024;
+let VIEW = null;   /* {it, path, dir, kind, editing, dirty} */
+function getUrl(p, dl){ return "/api/fs/get?" + (dl ? "dl=1&" : "") + "path=" + encodeURIComponent(p); }
+
+async function openViewer(it, edit){
+  if (VIEW && VIEW.dirty && !confirm("Hay cambios sin guardar. ¿Descartarlos?")) return;
+  const p = joinPath(CWD, it.name);
+  const kind = edit ? "text" : kindOf(it.name);
+  VIEW = {it, path:p, dir:CWD, kind, editing: kind === "text" && CUR.rw, dirty:false, rw: CUR.rw};
+  $("#viewer").classList.remove("hidden");
+  $("#v-name").textContent = it.name;
+  $("#v-dl").href = getUrl(p, true);
+  $("#v-dirty").classList.add("hidden");
+  $("#v-save").classList.toggle("hidden", !VIEW.editing);
+  $("#v-edit").classList.toggle("hidden", !!kind || !CUR.rw || it.size > TEXT_MAX);
+  const media = (CUR.sorted || []).filter(e => !e.dir && ["image","video","audio"].includes(kindOf(e.name)));
+  const nav = ["image","video","audio"].includes(kind) && media.length > 1;
+  $("#v-prev").classList.toggle("hidden", !nav); $("#v-next").classList.toggle("hidden", !nav);
+  const body = $("#v-body"); body.textContent = ""; body.className = "vbody";
+  const url = getUrl(p, false);
+  if (kind === "image") body.append(el("img", {src:url, alt:it.name}));
+  else if (kind === "video") body.append(el("video", {src:url, controls:true, autoplay:true, playsinline:true}));
+  else if (kind === "audio") body.append(el("audio", {src:url, controls:true, autoplay:true}));
+  else if (kind === "pdf") {
+    body.append(el("div", {class:"msg"}, "Los PDF se abren en una pestaña nueva. ",
+      el("a", {href:url, target:"_blank", rel:"noopener", style:"color:#9cf"}, "Abrir PDF")));
+  } else if (kind === "text") {
+    body.classList.add("text");
+    if (it.size > TEXT_MAX) { body.append(el("div", {class:"msg", style:"color:var(--muted)"}, "Es demasiado grande para abrirlo aquí (máx. 5 MB). Descárgalo.")); VIEW.editing = false; $("#v-save").classList.add("hidden"); return; }
+    const ta = el("textarea", {spellcheck:"false"});
+    ta.readOnly = !VIEW.editing;
+    ta.value = "Cargando…";
+    body.append(ta);
+    try {
+      const r = await fetch(getUrl(p, true), {credentials:"same-origin"});
+      if (!r.ok) throw new Error("Error " + r.status);
+      ta.value = await r.text();
+      ta.oninput = () => { if (!VIEW.dirty) { VIEW.dirty = true; $("#v-dirty").classList.remove("hidden"); } };
+      if (VIEW.editing) ta.focus();
+    } catch(e) { ta.value = ""; toast("No se pudo abrir: " + e.message); }
+  } else {
+    body.append(el("div", {class:"msg"}, "No se puede previsualizar este tipo de archivo. Descárgalo",
+      CUR.rw && it.size <= TEXT_MAX ? " o ábrelo como texto." : "."));
+  }
+  function step(d){
+    const i = media.findIndex(e => e.name === VIEW.it.name);
+    if (i < 0) return;
+    openViewer(media[(i + d + media.length) % media.length], false);
+  }
+  $("#v-prev").onclick = () => step(-1);
+  $("#v-next").onclick = () => step(1);
+}
+$("#v-edit").onclick = () => { if (VIEW) openViewer(VIEW.it, true); };
+$("#v-save").onclick = saveViewer;
+async function saveViewer(){
+  if (!VIEW || !VIEW.editing) return;
+  const ta = $("#v-body textarea");
+  try {
+    await putFile(VIEW.path, new Blob([ta.value], {type:"text/plain"}), ()=>{});
+    VIEW.dirty = false; $("#v-dirty").classList.add("hidden");
+    toast("Guardado");
+    if (CWD === VIEW.dir) loadDir(CWD);
+  } catch(e) { toast("No se pudo guardar: " + e.message); }
+}
+function closeViewer(){
+  if (VIEW && VIEW.dirty && !confirm("Hay cambios sin guardar. ¿Cerrar igualmente?")) return;
+  $("#viewer").classList.add("hidden");
+  $("#v-body").textContent = "";
+  VIEW = null;
+}
+$("#v-close").onclick = closeViewer;
+document.addEventListener("keydown", ev => {
+  if ($("#viewer").classList.contains("hidden")) return;
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") { ev.preventDefault(); saveViewer(); }
+  else if (ev.key === "Escape") closeViewer();
+  else if (VIEW && !VIEW.editing && ev.key === "ArrowLeft" && !$("#v-prev").classList.contains("hidden")) $("#v-prev").click();
+  else if (VIEW && !VIEW.editing && ev.key === "ArrowRight" && !$("#v-next").classList.contains("hidden")) $("#v-next").click();
+});
+window.addEventListener("beforeunload", ev => { if (VIEW && VIEW.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
+
+/* ---------- Solicitudes de recuperación ---------- */
+let REQ_TIMER = null;
+async function pollRequests(){
+  clearTimeout(REQ_TIMER);
+  if (!ME || !ME.admin) return;
+  let reqs = [];
+  try { reqs = (await api("GET", "/api/admin/requests")).requests; } catch(e) {}
+  const b = $("#reqbadge");
+  b.textContent = reqs.length; b.classList.toggle("hidden", !reqs.length);
+  renderRequests(reqs);
+  REQ_TIMER = setTimeout(pollRequests, TAB === "users" ? 8000 : 30000);
+}
+function renderRequests(reqs){
+  $("#reqs").classList.toggle("hidden", !reqs.length);
+  const l = $("#reqlist"); l.textContent = "";
+  for (const q of reqs){
+    l.append(el("div", {class:"req"},
+      el("span", {class:"grow"}, el("strong", {}, q.user), " pide su contraseña",
+        el("span", {class:"hint", style:"margin-left:8px"}, "desde " + q.ip + " · " + fmtDate(q.created)),
+        q.pw_known ? null : el("span", {class:"tag warn"}, "su contraseña aún no se conoce: ponle una nueva antes")),
+      el("button", {class:"btn sm ok", onclick:()=>decide(q, "approve")}, "Aceptar"),
+      el("button", {class:"btn sm danger", onclick:()=>decide(q, "deny")}, "Rechazar")));
+  }
+}
+async function decide(q, action){
+  try {
+    await api("POST", "/api/admin/request", form({id:q.id, action}));
+    toast(action === "approve" ? "Aceptada: " + q.user + " verá su contraseña en su pantalla" : "Solicitud rechazada");
+  } catch(e) {
+    toast(e.message);
+    if (action === "approve") { const u = USERS.find(x => x.name === q.user); if (u) editUser(u); }
+  }
+  pollRequests();
+}
+
 /* ---------- Usuarios ---------- */
 async function loadUsers(select){
   try { USERS = (await api("GET", "/api/admin/users")).users; } catch(e) { return toast(e.message); }
   const l = $("#ulist"); l.textContent = "";
   for (const u of USERS){
-    l.append(el("button", {class: EDIT && EDIT.name === u.name ? "on" : "", onclick:()=>editUser(u)},
+    l.append(el("button", {class: EDIT && EDIT.name === u.name ? "on" : "", "data-name":u.name, onclick:()=>editUser(u)},
       el("span", {class:"grow"}, u.name, u.admin ? el("span",{class:"tag"},"admin") : null,
         u.must_chpass ? el("span",{class:"tag"},"cambio pendiente") : null,
         u.mounts.some(m => m.enc) ? el("span",{class:"tag"},"🔒") : null,
@@ -516,12 +953,19 @@ async function loadUsers(select){
 
 function editUser(u){
   EDIT = u;
-  $$("#ulist button").forEach(b => b.classList.toggle("on", !!u && b.firstChild.firstChild.textContent === u.name));
+  $$("#ulist button").forEach(b => b.classList.toggle("on", !!u && b.dataset.name === u.name));
   const f = $("#f-user");
+  resetEyes(f);
   $("#u-title").textContent = u ? "Editar " + u.name : "Nuevo usuario";
   f.name.value = u ? u.name : ""; f.name.readOnly = !!u;
   f.password.value = "";
+  f.email.value = u ? (u.email || "") : "";
+  $("#u-passlabel").textContent = u ? "Nueva contraseña" : "Contraseña";
   f.password.placeholder = u ? "Déjala vacía para no cambiarla" : "Mínimo 6 caracteres";
+  $("#u-curpw-box").classList.toggle("hidden", !u);
+  $("#u-curpw").textContent = u && !u.pw_known ? "aún no se conoce (se guardará cuando vuelva a entrar)" : "••••••••";
+  $("#b-showpw").classList.toggle("hidden", !u || !u.pw_known);
+  $("#b-showpw").dataset.shown = "";
   f.enabled.checked = u ? u.enabled : true;
   f.admin.checked = u ? u.admin : false;
   f.can_chpass.checked = u ? u.can_chpass : true;
@@ -532,6 +976,15 @@ function editUser(u){
   (u ? u.mounts : []).forEach(addMountRow);
   if (!u) addMountRow();
 }
+$("#b-showpw").onclick = async () => {
+  const b = $("#b-showpw");
+  if (b.dataset.shown) { $("#u-curpw").textContent = "••••••••"; b.dataset.shown = ""; b.textContent = ""; b.append(svgIcon("eye")); return; }
+  try {
+    const r = await api("POST", "/api/admin/user/password", form({name:EDIT.name}));
+    $("#u-curpw").textContent = r.password; b.dataset.shown = "1";
+    b.textContent = ""; b.append(svgIcon("eyeoff"));
+  } catch(e) { toast(e.message); }
+};
 
 function addMountRow(mt){
   const name = el("input", {type:"text", placeholder:"Nombre (p. ej. Películas)", value: mt ? mt.name : ""});
@@ -539,7 +992,7 @@ function addMountRow(mt){
   const rw = el("select", {}, el("option",{value:"ro"},"Solo lectura"), el("option",{value:"rw"},"Lectura y escritura"),
     el("option",{value:"enc"},"Privada cifrada"));
   rw.value = mt && mt.enc ? "enc" : (mt && mt.rw ? "rw" : "ro");
-  rw.title = "Privada cifrada: solo este usuario puede leerla; ni el administrador ve los nombres ni el contenido";
+  rw.title = "Privada cifrada: se guarda cifrada en el disco y solo este usuario la ve";
   const row = el("div", {class:"mrow"}, name, path,
     el("button", {type:"button", class:"btn sm", onclick:()=>openPicker(path.value || "/mnt", p => {
       path.value = p;
@@ -563,19 +1016,17 @@ $("#f-user").addEventListener("submit", async ev => {
     if (n.includes("|") || p.includes("|")) { $("#e-user").textContent = "No se permite el carácter «|»"; return; }
     lines.push(rw + "|" + n + "|" + p);
   }
-  if (EDIT && EDIT.has_key && f.password.value &&
-      !confirm("«" + EDIT.name + "» tiene carpetas privadas cifradas. Si le cambias tú la contraseña, " +
-               "perderá para siempre el acceso a lo que ya tenga cifrado. ¿Seguir?")) return;
-  if (lines.some(l => l.startsWith("enc|")) && !f.must_chpass.checked && !(EDIT && EDIT.has_key) && f.password.value &&
-      !confirm("Vas a darle una carpeta privada con una contraseña que conoces tú. Si no le obligas a cambiarla, " +
-               "podrías abrir sus archivos. ¿Guardar igualmente?")) return;
+  if (EDIT && EDIT.has_key && !EDIT.pw_known && f.password.value &&
+      !confirm("Aún no se conoce la contraseña de «" + EDIT.name + "» (no ha vuelto a entrar desde la actualización). " +
+               "Si se la cambias ahora, perderá el acceso a lo que ya tenga en su carpeta privada. ¿Seguir?")) return;
   try {
-    await api("POST", "/api/admin/user", form({name:f.name.value, password:f.password.value,
+    await api("POST", "/api/admin/user", form({name:f.name.value, password:f.password.value, email:f.email.value.trim(),
       admin: f.admin.checked ? "1" : "0", enabled: f.enabled.checked ? "1" : "0",
       can_chpass: f.can_chpass.checked ? "1" : "0", must_chpass: f.must_chpass.checked ? "1" : "0",
       mounts: lines.join("\n")}));
     toast("Usuario guardado");
     loadUsers(f.name.value);
+    pollRequests();
   } catch(e) { $("#e-user").textContent = e.message; }
 });
 
@@ -615,19 +1066,31 @@ async function loadSettings(){
   let s;
   try { s = await api("GET", "/api/admin/settings"); } catch(e) { return toast(e.message); }
   const f = $("#f-settings");
-  for (const k of ["ftp_port","http_port","sftp_port","pasv_min","pasv_max","pasv_address"]) f[k].value = s[k];
-  for (const k of ["sftp_enabled","ftp_enabled"]) f[k].checked = s[k];
+  resetEyes(f);
+  for (const k of ["ftp_port","http_port","sftp_port","pasv_min","pasv_max","pasv_address","smtp_user","smtp_host","smtp_port","smtp_from_name"]) f[k].value = s[k];
+  for (const k of ["sftp_enabled","ftp_enabled","recover_email","recover_admin"]) f[k].checked = s[k];
+  f.smtp_pass.value = "";
+  $("#smtp-pass-state").textContent = s.smtp_pass_set ? "(guardada)" : "(sin configurar)";
+  if (!$("#i-testmail").value) $("#i-testmail").value = ME.email || "";
   const fps = $("#fps"); fps.textContent = "";
   if (s.fp_ecdsa) fps.append(el("div", {}, "ECDSA: ", el("code", {}, s.fp_ecdsa)));
   if (s.fp_rsa) fps.append(el("div", {}, "RSA: ", el("code", {}, s.fp_rsa)));
   if (!s.fp_ecdsa && !s.fp_rsa) fps.append(el("div", {}, "SFTP no está en marcha."));
   const box = $("#ifaces"); box.textContent = "";
-  const h = location.hostname;
-  if (s.sftp_enabled) box.append(el("div", {}, "SFTP: servidor ", el("code",{}, h), " puerto ", el("code",{}, String(s.sftp_port)), ", con tu usuario y contraseña."));
-  if (s.ftp_enabled) box.append(el("div", {}, "FTP: ", el("code",{}, "ftp://" + h + ":" + s.ftp_port), " (modo pasivo)."));
-  box.append(el("div", {}, "Web: ", el("code",{}, location.origin)));
-  box.append(el("div", {style:"margin-top:8px"}, "Direcciones de la consola: ",
-    ...s.interfaces.filter(i => !i.ip.startsWith("127.")).map(i => el("code", {style:"margin-right:6px"}, i.ip))));
+  const lan = s.interfaces.filter(i => !i.ip.startsWith("127.") && !i.ip.startsWith("100.")).map(i => i.ip);
+  const host = location.hostname === "127.0.0.1" || location.hostname === "localhost" ? (lan[0] || location.hostname) : location.hostname;
+  const ts = s.tailscale_ip;
+  const line = (label, ip) => {
+    const d = el("div", {style:"margin-top:4px"}, el("strong", {}, label + ": "));
+    if (s.sftp_enabled) d.append("SFTP ", el("code",{}, ip), " puerto ", el("code",{}, String(s.sftp_port)), " · ");
+    d.append("web ", el("code", {}, "http://" + ip + ":" + s.http_port));
+    if (s.ftp_enabled) d.append(" · FTP ", el("code",{}, "ftp://" + ip + ":" + s.ftp_port));
+    return d;
+  };
+  box.append(line("En casa", host));
+  box.append(ts ? line("Fuera de casa (Tailscale)", ts)
+                : el("div", {style:"margin-top:4px"}, el("strong", {}, "Fuera de casa: "), "no se encuentra la IP de Tailscale (¿está el payload de Tailscale en marcha?)"));
+  box.append(el("div", {style:"margin-top:4px"}, "Entra con tu usuario y contraseña de PS5NAS."));
 }
 $("#f-settings").addEventListener("submit", async ev => {
   ev.preventDefault();
@@ -636,11 +1099,24 @@ $("#f-settings").addEventListener("submit", async ev => {
   try {
     await api("POST", "/api/admin/settings", form({ftp_port:f.ftp_port.value, http_port:f.http_port.value,
       sftp_port:f.sftp_port.value, pasv_min:f.pasv_min.value, pasv_max:f.pasv_max.value,
-      pasv_address:f.pasv_address.value.trim(), 
-      sftp_enabled: f.sftp_enabled.checked ? "1" : "0", ftp_enabled: f.ftp_enabled.checked ? "1" : "0"}));
+      pasv_address:f.pasv_address.value.trim(),
+      sftp_enabled: f.sftp_enabled.checked ? "1" : "0", ftp_enabled: f.ftp_enabled.checked ? "1" : "0",
+      recover_email: f.recover_email.checked ? "1" : "0", recover_admin: f.recover_admin.checked ? "1" : "0",
+      smtp_user:f.smtp_user.value.trim(), smtp_pass:f.smtp_pass.value, smtp_host:f.smtp_host.value.trim(),
+      smtp_port:f.smtp_port.value, smtp_from_name:f.smtp_from_name.value.trim()}));
     toast("Ajustes guardados");
+    loadSettings();
   } catch(e) { $("#e-settings").textContent = e.message; }
 });
+$("#b-testmail").onclick = async () => {
+  const to = $("#i-testmail").value.trim(), m = $("#m-testmail");
+  if (!to) return toast("Escribe un correo para la prueba");
+  m.className = "hint"; m.textContent = "Enviando… (guarda antes los ajustes si los has cambiado)";
+  try {
+    await api("POST", "/api/admin/mail/test", form({to}));
+    m.className = "okmsg"; m.textContent = "Enviado. Revisa la bandeja de entrada (y spam) de " + to + ".";
+  } catch(e) { m.className = "err"; m.textContent = e.message; }
+};
 
 boot();
 </script>

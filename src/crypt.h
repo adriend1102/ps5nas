@@ -46,6 +46,15 @@ int  crypt_wrap(const uint8_t kek[CRYPT_KEY_LEN], const uint8_t dek[CRYPT_KEY_LE
 int  crypt_unwrap(const uint8_t kek[CRYPT_KEY_LEN], const char *hex,
                   uint8_t dek[CRYPT_KEY_LEN]);
 
+/* Secretos cortos (p. ej. contraseñas) con AES-256-GCM.  Hex de
+   (12 + len + 16) * 2 caracteres. */
+#define CRYPT_SEAL_MAX   160
+#define CRYPT_SEAL_HEX   ((12 + CRYPT_SEAL_MAX + 16) * 2)
+int  crypt_seal(const uint8_t key[CRYPT_KEY_LEN], const char *aad, const void *plain,
+                size_t len, char *out_hex, size_t outlen);
+int  crypt_open(const uint8_t key[CRYPT_KEY_LEN], const char *aad, const char *hex,
+                char *out, size_t outlen);
+
 /* Nombres.  Devuelven 0, o -1 con errno (ENAMETOOLONG, EINVAL). */
 int  crypt_name_enc(const ukey_t *k, const char *plain, char *out, size_t outlen);
 int  crypt_name_dec(const ukey_t *k, const char *enc, char *out, size_t outlen);

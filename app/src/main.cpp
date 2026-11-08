@@ -1,5 +1,5 @@
 /*
- * PS5 Share - app de la pantalla de inicio.
+ * PS5NAS - app de la pantalla de inicio.
  * Copyright (C) 2026 ps5share contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -56,6 +56,7 @@ extern "C"
     int sceNetSocket(const char *name, int family, int type, int protocol);
     int sceNetConnect(int socket, const void *address, unsigned length);
     int sceNetSend(int socket, const void *data, std::size_t size, int flags);
+    int sceNetRecv(int socket, void *data, std::size_t size, int flags);
     int sceNetSocketClose(int socket);
     int sceNetSetsockopt(int socket, int level, int name, const void *value, unsigned length);
     int sceNetCtlInit(void);
@@ -135,6 +136,7 @@ enum Color : std::uint32_t
     ok = UINT32_C(0xff6cd47a),
     warn = UINT32_C(0xff4ec4ff),
     bad = UINT32_C(0xff5a5aff),
+    lock = UINT32_C(0xff3db3f2),    /* amarillo del candado */
 };
 
 /* Fuente 5x7: mayúsculas, cifras y signos básicos. */
@@ -394,6 +396,55 @@ void read_ports(unsigned &http, unsigned &sftp) noexcept
     find("set\tsftp_port\t", sftp);
 }
 
+/* Pide /api/status al servidor: su IP de Tailscale y el puerto SFTP. */
+bool fetch_status(unsigned http, char *ts_ip, std::size_t ts_len, unsigned &sftp) noexcept
+{
+    const int s = connect_local(static_cast<std::uint16_t>(http));
+    if (s < 0)
+        return false;
+    static const char req[] = "GET /api/status HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+    if (sceNetSend(s, req, sizeof(req) - 1, 0) != static_cast<int>(sizeof(req) - 1))
+    {
+        (void)sceNetSocketClose(s);
+        return false;
+    }
+    static char buf[4096];
+    std::size_t have = 0;
+    for (;;)
+    {
+        const int n = sceNetRecv(s, buf + have, sizeof(buf) - 1 - have, 0);
+        if (n <= 0)
+            break;
+        have += static_cast<std::size_t>(n);
+        if (have >= sizeof(buf) - 1)
+            break;
+    }
+    (void)sceNetSocketClose(s);
+    buf[have] = 0;
+    const char *p = std::strstr(buf, "\"tailscale_ip\":\"");
+    if (!p)
+        return false;
+    p += 16;
+    std::size_t n = 0;
+    while (p[n] && p[n] != '"' && n + 1 < ts_len && n < 15)
+    {
+        ts_ip[n] = p[n];
+        ++n;
+    }
+    ts_ip[n] = 0;
+    const char *q = std::strstr(buf, "\"sftp_port\":");
+    if (q)
+    {
+        q += 12;
+        unsigned v = 0;
+        while (*q >= '0' && *q <= '9')
+            v = v * 10 + static_cast<unsigned>(*q++ - '0');
+        if (v > 0 && v < 65536)
+            sftp = v;
+    }
+    return true;
+}
+
 void local_ip(char *out, std::size_t len) noexcept
 {
     union
@@ -425,6 +476,7 @@ struct State
     unsigned http = 8000;
     unsigned sftp = 2222;
     char ip[32] = "?";
+    char ts_ip[20] = "";
     char error[128] = "";
     char browser[96] = "";
     bool started_by_app = false;
@@ -436,13 +488,22 @@ void draw(Canvas &c, const State &st) noexcept
     char buf[160];
     c.rect(0, 0, frame_width, frame_height, bg);
 
-    /* cabecera */
-    c.rect(140, 110, 72, 72, accent);
-    c.rect(158, 128, 36, 8, bg);
-    c.rect(158, 146, 36, 8, bg);
-    c.rect(158, 164, 24, 8, bg);
-    c.text(240, 112, "PS5 SHARE", 9, white);
-    c.text(242, 186, "SERVIDOR DE ARCHIVOS MULTIUSUARIO", 3, muted);
+    /* cabecera: servidor con candado */
+    c.rect(140, 104, 64, 20, accent);
+    c.rect(140, 130, 64, 20, accent);
+    c.rect(140, 156, 44, 20, accent);
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        c.rect(148, 111 + i * 26, 6, 6, bg);
+        c.rect(162, 112 + i * 26, 28, 4, bg);
+    }
+    c.rect(196, 150, 4, 14, white);
+    c.rect(220, 150, 4, 14, white);
+    c.rect(196, 146, 28, 4, white);
+    c.rect(190, 162, 40, 30, lock);
+    c.rect(207, 170, 6, 14, bg);
+    c.text(260, 112, "PS5NAS", 9, white);
+    c.text(262, 186, "TU NAS EN LA PS5: SFTP, WEB Y CARPETAS PRIVADAS", 3, muted);
 
     c.rect(140, 260, 1640, 2, line);
 
@@ -474,25 +535,38 @@ void draw(Canvas &c, const State &st) noexcept
         c.text(196, 380, st.error, 3, bad);
 
     /* conexión */
-    c.rect(140, 450, 1640, 330, panel);
-    c.text(190, 490, "PANEL WEB", 3, muted);
-    std::snprintf(buf, sizeof(buf), "HTTP://%s:%u", st.ip, st.http);
-    c.text(190, 530, buf, 6, white);
-    c.text(190, 620, "SFTP (MIS ARCHIVOS, WINSCP, FILEZILLA...)", 3, muted);
-    std::snprintf(buf, sizeof(buf), "%s  PUERTO %u", st.ip, st.sftp);
-    c.text(190, 660, buf, 6, white);
-    c.text(190, 730, "FUERA DE CASA: USA LA IP 100.X.Y.Z DE TAILSCALE", 3, muted);
+    c.rect(140, 420, 1640, 420, panel);
+    c.text(190, 450, "EN CASA (MISMA WIFI)", 3, muted);
+    std::snprintf(buf, sizeof(buf), "WEB   HTTP://%s:%u", st.ip, st.http);
+    c.text(190, 488, buf, 5, white);
+    std::snprintf(buf, sizeof(buf), "SFTP  %s  PUERTO %u", st.ip, st.sftp);
+    c.text(190, 540, buf, 5, white);
+    c.rect(190, 608, 1540, 2, line);
+    c.text(190, 634, "FUERA DE CASA (TAILSCALE)", 3, muted);
+    if (st.ts_ip[0])
+    {
+        std::snprintf(buf, sizeof(buf), "WEB   HTTP://%s:%u", st.ts_ip, st.http);
+        c.text(190, 672, buf, 5, white);
+        std::snprintf(buf, sizeof(buf), "SFTP  %s  PUERTO %u", st.ts_ip, st.sftp);
+        c.text(190, 724, buf, 5, white);
+    }
+    else
+    {
+        c.text(190, 672, "NO SE ENCUENTRA LA IP DE TAILSCALE", 5, warn);
+        c.text(190, 730, "ARRANCA EL PAYLOAD DE TAILSCALE: SU IP APARECERA AQUI SOLA", 3, muted);
+    }
+    c.text(190, 792, "SFTP: MIS ARCHIVOS DE SAMSUNG, WINSCP, FILEZILLA... CON TU USUARIO", 3, muted);
 
     /* controles */
     if (st.phase == Phase::ready)
     {
-        unsigned x = c.text(140, 850, "X", 5, accent);
-        c.text(x + 20, 850, "ABRIR EL PANEL DE ADMINISTRACION", 5, white);
+        unsigned x = c.text(140, 890, "X", 5, accent);
+        c.text(x + 20, 890, "ABRIR EL PANEL DE ADMINISTRACION", 5, white);
     }
-    unsigned x = c.text(140, 920, "TRIANGULO", 5, accent);
-    c.text(x + 20, 920, "REINICIAR EL SERVIDOR", 5, white);
+    unsigned x = c.text(140, 950, "TRIANGULO", 5, accent);
+    c.text(x + 20, 950, "REINICIAR EL SERVIDOR", 5, white);
     if (st.browser[0])
-        c.text(140, 1000, st.browser, 3, muted);
+        c.text(140, 1020, st.browser, 3, muted);
 
     /* indicador de actividad */
     if (st.phase == Phase::checking || st.phase == Phase::starting ||
@@ -534,17 +608,17 @@ int main()
 
     const int video = sceVideoOutOpen(0xff, 0, 0, nullptr);
     if (video < 0)
-        halt("PS5 Share: sceVideoOutOpen failed");
+        halt("PS5NAS: sceVideoOutOpen failed");
     const std::size_t pool = sceKernelGetDirectMemorySize();
     std::int64_t phys = 0;
     if (pool < memory_bytes ||
         sceKernelAllocateDirectMemory(0, static_cast<std::int64_t>(pool), memory_bytes,
                                       memory_alignment, memory_type_wc_garlic, &phys) < 0)
-        halt("PS5 Share: direct memory allocation failed");
+        halt("PS5NAS: direct memory allocation failed");
     void *mapped = nullptr;
     if (sceKernelMapDirectMemory(&mapped, memory_bytes, map_protection, 0, phys,
                                  memory_alignment) < 0)
-        halt("PS5 Share: direct memory mapping failed");
+        halt("PS5NAS: direct memory mapping failed");
 
     auto *base = static_cast<std::uint8_t *>(mapped);
     std::array<VideoBuffer, 2> buffers{{
@@ -556,7 +630,7 @@ int main()
     sceVideoOutSetBufferAttribute2(&attribute, pixel_format_rgba8_srgb, 0, frame_width,
                                    frame_height, 0, 0, 0);
     if (sceVideoOutRegisterBuffers2(video, 0, 0, buffers.data(), 2, &attribute, 0, nullptr) < 0)
-        halt("PS5 Share: buffer registration failed");
+        halt("PS5NAS: buffer registration failed");
 
     /* mando */
     int pad = -1;
@@ -597,6 +671,7 @@ int main()
                 {
                     trace("servidor ya en marcha");
                     st.phase = Phase::ready;
+                    ticks = 0;
                 }
                 else if (send_payload(st.error, sizeof(st.error)))
                 {
@@ -626,7 +701,10 @@ int main()
                 {
                     read_ports(st.http, st.sftp);
                     if (port_open(static_cast<std::uint16_t>(st.http)))
+                    {
                         st.phase = Phase::ready;
+                        ticks = 0;
+                    }
                     else if (ticks > 900)
                     {
                         st.phase = Phase::failed;
@@ -636,6 +714,13 @@ int main()
                 }
                 break;
             case Phase::ready:
+                /* IP de Tailscale: al empezar y luego cada ~10 s (puede arrancar después) */
+                if (ticks++ % 100 == 0)
+                {
+                    char ts[20] = "";
+                    if (fetch_status(st.http, ts, sizeof(ts), st.sftp))
+                        std::snprintf(st.ts_ip, sizeof(st.ts_ip), "%s", ts);
+                }
                 if (!opened)
                 {
                     opened = true;
@@ -676,6 +761,8 @@ int main()
                              (busy ? static_cast<unsigned>(st.frame / 8) % 3 : 0U) * 10000U +
                              static_cast<unsigned>(std::strlen(st.browser)) * 100U +
                              static_cast<unsigned>(std::strlen(st.ip)) +
+                             static_cast<unsigned>(std::strlen(st.ts_ip)) * 13U + st.sftp * 5U +
+                             static_cast<unsigned>(st.ts_ip[std::strlen(st.ts_ip) ? std::strlen(st.ts_ip) - 1 : 0]) * 17U +
                              static_cast<unsigned>(std::strlen(st.error)) * 7U + st.http * 3U;
         if (sig != last_sig || st.frame < 2)
         {

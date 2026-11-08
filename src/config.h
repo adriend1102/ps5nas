@@ -25,6 +25,7 @@ typedef struct mount {
   char name[CFG_NAME_MAX+1];  /* nombre de la carpeta virtual que ve el usuario */
   char path[PATH_MAX];        /* ruta real en la PS5 */
   int  rw;                    /* 0 = solo lectura, 1 = lectura/escritura */
+  int  enc;                   /* carpeta privada cifrada (implica rw) */
 } mount_t;
 
 
@@ -36,6 +37,8 @@ typedef struct user {
   int  enabled;
   int  can_chpass;            /* puede cambiar su propia contraseña desde la web */
   int  must_chpass;           /* debe cambiarla en el próximo inicio de sesión web */
+  char ksalt[CFG_SALT_HEX+1]; /* sal de la clave que envuelve su DEK */
+  char kwrap[121];            /* DEK envuelta (vacía si aún no tiene) */
   int  nmounts;
   mount_t mounts[CFG_MAX_MOUNTS];
 } user_t;
@@ -91,5 +94,13 @@ int  cfg_valid_mountname(const char *s);
 
 /* Utilidades de aleatoriedad / tiempo constante. */
 void cfg_random_hex(char *out, size_t nbytes);
+void cfg_random(uint8_t *buf, size_t n);
+
+/* Desbloquea la clave de cifrado del usuario con su contraseña (ya
+   comprobada).  La crea si tiene carpetas cifradas y aún no la tiene.
+   KEY (ukey_t de crypt.h) queda con ok=0 si no hay clave disponible. */
+struct ukey;
+void cfg_unlock_key(const char *name, const char *pass, struct ukey *key);
+int  cfg_user_has_enc(const user_t *u);
 int  ps5share_rand_seed(unsigned char *out, unsigned int sz);   /* para wolfCrypt */
 int  cfg_consttime_eq(const char *a, const char *b);

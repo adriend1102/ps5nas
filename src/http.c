@@ -134,6 +134,7 @@ typedef struct req {
   size_t body_len;
 
   user_t user;         /* usuario autenticado (si lo hay) */
+  ukey_t key;          /* su clave de cifrado (si la tiene) */
   int    authed;
 } req_t;
 
@@ -219,6 +220,9 @@ trim(char *s) {
 static int
 parse_request(req_t *r) {
   char *save = NULL;
+  /* Corta el texto en el final de las cabeceras para que strtok_r no toque
+     los primeros bytes del cuerpo, que ya están en el mismo búfer. */
+  r->hdr[r->body_start - 1] = 0;
   char *line = strtok_r(r->hdr, "\r\n", &save);
   char target[8192];
 
@@ -398,6 +402,7 @@ typedef struct session {
   char   token[65];
   char   user[CFG_NAME_MAX+1];
   time_t expires;
+  ukey_t key;          /* clave de sus carpetas cifradas (solo en memoria) */
 } session_t;
 
 static session_t g_sess[SESSION_MAX];
@@ -405,7 +410,7 @@ static pthread_mutex_t g_sess_lock = PTHREAD_MUTEX_INITIALIZER;
 
 
 static void
-session_create(const char *user, char *token_out) {
+session_create(const char *user, const ukey_t *key, char *token_out) {
   time_t now = time(NULL);
   int slot = 0;
 
@@ -418,12 +423,14 @@ session_create(const char *user, char *token_out) {
   snprintf(g_sess[slot].token, sizeof(g_sess[slot].token), "%s", token_out);
   snprintf(g_sess[slot].user, sizeof(g_sess[slot].user), "%s", user);
   g_sess[slot].expires = now + SESSION_TTL;
+  if(key) memcpy(&g_sess[slot].key, key, sizeof(*key));
+  else memset(&g_sess[slot].key, 0, sizeof(g_sess[slot].key));
   pthread_mutex_unlock(&g_sess_lock);
 }
 
 
 static int
-session_lookup(const char *token, char *user_out) {
+session_lookup(const char *token, char *user_out, ukey_t *key_out) {
   time_t now = time(NULL);
   int r = -1;
   if(strlen(token) != 64) return -1;
@@ -431,12 +438,25 @@ session_lookup(const char *token, char *user_out) {
   for(int i=0; i<SESSION_MAX; i++) {
     if(g_sess[i].expires >= now && cfg_consttime_eq(g_sess[i].token, token)) {
       snprintf(user_out, CFG_NAME_MAX + 1, "%s", g_sess[i].user);
+      memcpy(key_out, &g_sess[i].key, sizeof(*key_out));
       r = 0;
       break;
     }
   }
   pthread_mutex_unlock(&g_sess_lock);
   return r;
+}
+
+
+static void
+session_set_key(const char *token, const ukey_t *key) {
+  pthread_mutex_lock(&g_sess_lock);
+  for(int i=0; i<SESSION_MAX; i++) {
+    if(g_sess[i].token[0] && cfg_consttime_eq(g_sess[i].token, token)) {
+      memcpy(&g_sess[i].key, key, sizeof(*key));
+    }
+  }
+  pthread_mutex_unlock(&g_sess_lock);
 }
 
 
@@ -518,12 +538,12 @@ rl_clear(uint32_t ip) {
 
 
 static int
-login_reply(req_t *r, const char *user) {
+login_reply(req_t *r, const char *user, const ukey_t *key) {
   char token[65];
   char cookie[256];
   sb_t b = {0};
 
-  session_create(user, token);
+  session_create(user, key, token);
   snprintf(cookie, sizeof(cookie),
            "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d\r\n",
            token, SESSION_TTL);
@@ -571,7 +591,7 @@ h_setup(req_t *r) {
   if(!pass[0]) return send_err(r, 400, "Falta la contraseña");
   if(cfg_upsert_user(&u, pass, err, sizeof(err))) return send_err(r, 400, err);
   LOG_PRINTF("ps5share: administrador inicial '%s' creado\n", user);
-  return login_reply(r, user);
+  return login_reply(r, user, NULL);
 }
 
 
@@ -593,7 +613,12 @@ h_login(req_t *r) {
     return send_err(r, 401, "Usuario o contraseña incorrectos");
   }
   rl_clear(ip);
-  return login_reply(r, user);
+  ukey_t key;
+  cfg_unlock_key(user, pass, &key);
+  memset(pass, 0, sizeof(pass));
+  int ret = login_reply(r, user, &key);
+  crypt_key_wipe(&key);
+  return ret;
 }
 
 
@@ -620,7 +645,10 @@ h_me(req_t *r) {
     if(i) sb_puts(&b, ",");
     sb_puts(&b, "{\"name\":");
     sb_json_str(&b, r->user.mounts[i].name);
-    sb_printf(&b, ",\"rw\":%s}", r->user.mounts[i].rw ? "true" : "false");
+    sb_printf(&b, ",\"rw\":%s,\"enc\":%s,\"locked\":%s}",
+              r->user.mounts[i].rw ? "true" : "false",
+              r->user.mounts[i].enc ? "true" : "false",
+              vfs_mount_usable(&r->user, &r->key, i) ? "false" : "true");
   }
   sb_puts(&b, "]}");
   return send_json(r, 200, &b, NULL);
@@ -634,6 +662,13 @@ h_me_password(req_t *r) {
   get_param(r->body, "old", oldp, sizeof(oldp));
   get_param(r->body, "new", newp, sizeof(newp));
   int ret = cfg_change_own_password(r->user.name, oldp, newp, err, sizeof(err));
+  if(!ret && !r->key.ok) {
+    /* Tras el primer cambio ya puede abrir (o crear) su clave. */
+    ukey_t key;
+    cfg_unlock_key(r->user.name, newp, &key);
+    if(key.ok) session_set_key(r->cookie_token, &key);
+    crypt_key_wipe(&key);
+  }
   memset(oldp, 0, sizeof(oldp));
   memset(newp, 0, sizeof(newp));
   if(ret) return send_err(r, 400, err);
@@ -653,7 +688,7 @@ lookup_param(req_t *r, const char *src, const char *name, vfs_res_t *res) {
     errno = EINVAL;
     return -1;
   }
-  return vfs_lookup(&r->user, "/", v, res);
+  return vfs_lookup(&r->user, &r->key, "/", v, res);
 }
 
 
@@ -676,9 +711,11 @@ h_fs_list(req_t *r) {
       if(i) sb_puts(&b, ",");
       sb_puts(&b, "{\"name\":");
       sb_json_str(&b, m->name);
-      sb_printf(&b, ",\"dir\":true,\"size\":0,\"mtime\":%lld,\"rw\":%s,\"missing\":%s}",
+      sb_printf(&b, ",\"dir\":true,\"size\":0,\"mtime\":%lld,\"rw\":%s,\"missing\":%s,"
+                "\"enc\":%s,\"locked\":%s}",
                 ok ? (long long)st.st_mtime : 0LL, m->rw ? "true" : "false",
-                ok ? "false" : "true");
+                ok ? "false" : "true", m->enc ? "true" : "false",
+                vfs_mount_usable(&r->user, &r->key, i) ? "false" : "true");
     }
     sb_puts(&b, "]}");
     return send_json(r, 200, &b, NULL);
@@ -689,20 +726,22 @@ h_fs_list(req_t *r) {
     free(b.p);
     return send_errno(r);
   }
-  sb_printf(&b, ",\"rw\":%s,\"root\":false,\"entries\":[", res.rw ? "true" : "false");
+  sb_printf(&b, ",\"rw\":%s,\"enc\":%s,\"root\":false,\"entries\":[",
+            res.rw ? "true" : "false", res.enc ? "true" : "false");
 
   struct dirent *e;
-  char full[PATH_MAX * 2];
+  char full[PATH_MAX * 2], name[NAME_MAX + 1];
   int first = 1;
   while((e = readdir(d))) {
-    if(!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    if(vfs_entry_name(&res, e->d_name, name, sizeof(name))) continue;
     snprintf(full, sizeof(full), "%s/%s", res.real, e->d_name);
     if(lstat(full, &st) || S_ISLNK(st.st_mode)) continue;
     if(!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) continue;
+    vfs_fix_size(&res, &st);
     if(!first) sb_puts(&b, ",");
     first = 0;
     sb_puts(&b, "{\"name\":");
-    sb_json_str(&b, e->d_name);
+    sb_json_str(&b, name);
     sb_printf(&b, ",\"dir\":%s,\"size\":%" PRIu64 ",\"mtime\":%lld}",
               S_ISDIR(st.st_mode) ? "true" : "false", (uint64_t)st.st_size,
               (long long)st.st_mtime);
@@ -756,15 +795,16 @@ h_fs_get(req_t *r) {
   vfs_res_t res;
   struct stat st;
   char extra[1536], disp[1024], dl[8];
-  int fd;
+  vfile_t vf;
 
   if(lookup_param(r, r->query, "path", &res)) return send_errno(r);
-  if(res.mount < 0) return send_err(r, 400, "No es un archivo");
-  if((fd = open(res.real, O_RDONLY)) < 0) return send_errno(r);
-  if(fstat(fd, &st) || !S_ISREG(st.st_mode)) {
-    close(fd);
+  if(res.mount < 0 || res.is_mount_root) return send_err(r, 400, "No es un archivo");
+  if(stat(res.real, &st) || !S_ISREG(st.st_mode)) {
+    if(errno == ENOENT) return send_errno(r);
     return send_err(r, 400, "No es un archivo");
   }
+  if(vf_open(&vf, &res, O_RDONLY)) return send_errno(r);
+  st.st_size = vf_size(&vf);
 
   const char *name = strrchr(res.vpath, '/');
   name = name ? name + 1 : res.vpath;
@@ -790,7 +830,7 @@ h_fs_get(req_t *r) {
       }
       if(end >= size) end = size - 1;
       if(start > end || start >= size) {
-        close(fd);
+        vf_close(&vf);
         snprintf(extra, sizeof(extra), "Content-Range: bytes */%lld\r\n", size);
         return send_body(r, 416, "text/plain", "", 0, extra);
       }
@@ -810,16 +850,24 @@ h_fs_get(req_t *r) {
 
   if(send_head(r, code, inline_ok ? mt : "application/octet-stream", len, extra) ||
      !strcmp(r->method, "HEAD")) {
-    close(fd);
+    vf_close(&vf);
     return 0;
   }
 
   void *buf = malloc(IO_BUFSIZE);
   if(buf) {
-    if(lseek(fd, start, SEEK_SET) >= 0) io_copy(fd, r->fd, (size_t)len, buf, IO_BUFSIZE);
+    off_t pos = start;
+    long long left = len;
+    while(left > 0) {
+      size_t want = left < IO_BUFSIZE ? (size_t)left : IO_BUFSIZE;
+      ssize_t n = vf_pread(&vf, buf, want, pos);
+      if(n <= 0 || io_writeall(r->fd, buf, (size_t)n)) break;
+      pos += n;
+      left -= n;
+    }
     free(buf);
   }
-  close(fd);
+  vf_close(&vf);
   return 0;
 }
 
@@ -828,7 +876,6 @@ static int
 h_fs_put(req_t *r) {
   vfs_res_t res;
   char part[PATH_MAX + 32];
-  int fd;
 
   if(lookup_param(r, r->query, "path", &res)) return send_errno(r);
   if(res.mount < 0 || res.is_mount_root || !res.rw) return send_err(r, 403, "Permiso denegado");
@@ -839,22 +886,35 @@ h_fs_put(req_t *r) {
     return send_err(r, 409, "Ya existe una carpeta con ese nombre");
   }
 
+  /* Se escribe en un temporal y se renombra al terminar.  En una carpeta
+     cifrada el temporal también va cifrado (y su nombre no es visible). */
+  vfs_res_t pres = res;
+  vfile_t vf;
   snprintf(part, sizeof(part), "%s.ps5share-part", res.real);
-  if((fd = open(part, O_WRONLY | O_CREAT | O_TRUNC, 0666)) < 0) return send_errno(r);
+  if(strlen(part) >= sizeof(pres.real)) {
+    errno = ENAMETOOLONG;
+    return send_errno(r);
+  }
+  memcpy(pres.real, part, strlen(part) + 1);
+  if(vf_open(&vf, &pres, O_WRONLY | O_CREAT | O_TRUNC)) return send_errno(r);
 
   void *buf = malloc(IO_BUFSIZE);
   if(!buf) {
-    close(fd);
+    vf_close(&vf);
     unlink(part);
     return send_err(r, 500, "Sin memoria");
   }
 
   long long remaining = r->content_length;
+  off_t pos = 0;
   int err = 0;
 
   size_t have = r->hdr_len - r->body_start;
   if(have > (size_t)remaining) have = (size_t)remaining;
-  if(have && io_writeall(fd, r->hdr + r->body_start, have)) err = errno;
+  if(have) {
+    if(vf_pwrite(&vf, r->hdr + r->body_start, have, 0) != (ssize_t)have) err = errno ? errno : EIO;
+    pos += (off_t)have;
+  }
   remaining -= (long long)have;
 
   io_sock_timeouts(r->fd, 300);
@@ -863,12 +923,13 @@ h_fs_put(req_t *r) {
     ssize_t n = recv(r->fd, buf, want, 0);
     if(n < 0 && errno == EINTR) continue;
     if(n <= 0) { err = n == 0 ? EPIPE : errno; break; }
-    if(io_writeall(fd, buf, (size_t)n)) { err = errno; break; }
+    if(vf_pwrite(&vf, buf, (size_t)n, pos) != n) { err = errno ? errno : EIO; break; }
+    pos += n;
     remaining -= n;
   }
   free(buf);
 
-  if(close(fd) && !err) err = errno;
+  if(vf_close(&vf) && !err) err = errno;
   if(err) {
     unlink(part);
     errno = err;
@@ -966,16 +1027,18 @@ h_admin_users(req_t *r) {
     sb_puts(&b, "{\"name\":");
     sb_json_str(&b, u->name);
     sb_printf(&b, ",\"admin\":%s,\"enabled\":%s,\"can_chpass\":%s,\"must_chpass\":%s,"
-              "\"mounts\":[",
+              "\"has_key\":%s,\"mounts\":[",
               u->admin ? "true" : "false", u->enabled ? "true" : "false",
-              u->can_chpass ? "true" : "false", u->must_chpass ? "true" : "false");
+              u->can_chpass ? "true" : "false", u->must_chpass ? "true" : "false",
+              u->kwrap[0] ? "true" : "false");
     for(int j=0; j<u->nmounts; j++) {
       if(j) sb_puts(&b, ",");
       sb_puts(&b, "{\"name\":");
       sb_json_str(&b, u->mounts[j].name);
       sb_puts(&b, ",\"path\":");
       sb_json_str(&b, u->mounts[j].path);
-      sb_printf(&b, ",\"rw\":%s}", u->mounts[j].rw ? "true" : "false");
+      sb_printf(&b, ",\"rw\":%s,\"enc\":%s}", u->mounts[j].rw ? "true" : "false",
+                u->mounts[j].enc ? "true" : "false");
     }
     sb_puts(&b, "]}");
   }
@@ -1016,7 +1079,8 @@ parse_mounts(const char *src, user_t *u, char *err, size_t errlen) {
         return -1;
       }
       mount_t *m = &u->mounts[u->nmounts++];
-      m->rw = !strcmp(line, "rw");
+      m->enc = !strcmp(line, "enc");
+      m->rw = m->enc || !strcmp(line, "rw");
       snprintf(m->name, sizeof(m->name), "%s", a + 1);
       snprintf(m->path, sizeof(m->path), "%s", bb + 1);
     }
@@ -1056,7 +1120,8 @@ h_admin_user_save(req_t *r) {
     return send_err(r, 400, "No puedes quitarte a ti mismo el rol de administrador");
   }
   if(cfg_upsert_user(&u, pass, err, sizeof(err))) return send_err(r, 400, err);
-  if(!u.enabled) session_destroy_user(u.name);
+  /* Desactivado o con contraseña nueva: sus sesiones dejan de valer. */
+  if(!u.enabled || pass[0]) session_destroy_user(u.name);
   LOG_PRINTF("ps5share: '%s' guardó el usuario '%s'\n", r->user.name, u.name);
   return send_ok(r);
 }
@@ -1253,7 +1318,7 @@ handle(req_t *r) {
 
     if(rt->auth) {
       char uname[CFG_NAME_MAX+1];
-      if(!r->cookie_token[0] || session_lookup(r->cookie_token, uname) ||
+      if(!r->cookie_token[0] || session_lookup(r->cookie_token, uname, &r->key) ||
          cfg_get_user(uname, &r->user) || !r->user.enabled) {
         send_err(r, 401, "Sesión no válida o caducada");
         return;
@@ -1301,6 +1366,7 @@ client_thread(void *p) {
   for(int i=0; i<64 && recv(r->fd, junk, sizeof(junk), 0) > 0; i++) {}
   close(r->fd);
   free(r->body);
+  crypt_key_wipe(&r->key);
   free(r);
 
   pthread_mutex_lock(&g_nclients_lock);

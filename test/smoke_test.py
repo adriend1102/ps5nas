@@ -194,6 +194,11 @@ s, body, h = bob.req("GET", "/api/fs/get" + q(path="/Peliculas/escape/pw.txt"), 
 check(s == 403, "symlink bloqueado en web")
 s, j, _ = bob.req("PUT", "/api/fs/put" + q(path="/Buzon/web.txt"), data=b"hola web")
 check(s == 200 and open(f"{BASE}/share/inbox/web.txt").read() == "hola web", "subida web (PUT)")
+binario = os.urandom(500000)
+s, j, _ = bob.req("PUT", "/api/fs/put" + q(path="/Buzon/binario.bin"), data=binario)
+check(s == 200 and open(f"{BASE}/share/inbox/binario.bin", "rb").read() == binario,
+      "subida web de un binario aleatorio íntegra")
+os.remove(f"{BASE}/share/inbox/binario.bin")
 s, j, _ = bob.req("PUT", "/api/fs/put" + q(path="/Peliculas/x.txt"), data=b"no")
 check(s == 403, "subida web a solo lectura denegada")
 s, j, _ = bob.req("POST", "/api/fs/mkdir" + q(path="/Buzon/d1"))
@@ -340,6 +345,165 @@ check(s == 400, "si el admin no lo permite, no puede cambiarla")
 t2, sf2 = sftp_connect("dani", "nueva123")
 t2.close()
 check(True, "editar permisos sin contraseña mantiene la actual")
+
+print("== Carpetas privadas cifradas")
+import random
+PRIV = f"{BASE}/share/privada"
+mk = lambda extra: {"name": "eva", "password": extra.get("password", ""), "admin": "0", "enabled": "1",
+                    "can_chpass": "1", "must_chpass": extra.get("must", "0"),
+                    "mounts": extra["mounts"]}
+os.makedirs(f"{BASE}/share/llena", exist_ok=True)
+open(f"{BASE}/share/llena/algo.txt", "w").write("x")
+s, j, _ = admin.req("POST", "/api/admin/user", mk({"password": "temporal1", "must": "1",
+                                                     "mounts": f"enc|Privado|{BASE}/share/llena"}))
+check(s == 400 and "vacía" in j["error"], "no se puede cifrar una carpeta con archivos")
+s, j, _ = admin.req("POST", "/api/admin/user", mk({"password": "temporal1", "must": "1",
+                                                     "mounts": f"enc|Privado|{BASE}/share/inbox"}))
+check(s == 400, "no se puede cifrar una carpeta que usa otro usuario")
+s, j, _ = admin.req("POST", "/api/admin/user", mk({"password": "temporal1", "must": "1",
+                                                     "mounts": f"enc|Privado|{PRIV}\nrw|Comun|{BASE}/share/inbox"}))
+check(s == 200 and os.path.isdir(PRIV), "carpeta privada creada para eva")
+s, j, _ = admin.req("POST", "/api/admin/user", {"name": "admin", "password": "", "admin": "1", "enabled": "1",
+                                                "can_chpass": "1", "must_chpass": "0",
+                                                "mounts": f"rw|Todo|{PRIV}"})
+check(s == 400, "el admin no puede montarse la carpeta privada de eva")
+
+eva = Web()
+eva.req("POST", "/api/login", {"user": "eva", "pass": "temporal1"})
+s, j, _ = eva.req("POST", "/api/me/password", {"old": "temporal1", "new": "secreta99"})
+check(s == 200, "eva cambia su contraseña temporal")
+s, j, _ = admin.req("GET", "/api/admin/users")
+check([u for u in j["users"] if u["name"] == "eva"][0]["has_key"] is True,
+      "la clave se crea al poner su contraseña propia")
+s, j, _ = eva.req("GET", "/api/fs/list" + q(path="/Privado"))
+check(s == 200, "y la carpeta privada se abre sin volver a entrar")
+
+t3, sf3 = sftp_connect("eva", "secreta99")
+check(sorted(sf3.listdir("/")) == ["Comun", "Privado"], "eva ve su carpeta privada por SFTP")
+s, j, _ = admin.req("GET", "/api/admin/users")
+check([u for u in j["users"] if u["name"] == "eva"][0]["has_key"] is True, "la clave se conserva")
+
+MARK = b"TEXTO-EN-CLARO-QUE-NO-DEBE-APARECER-"
+files = {}
+for size in [0, 1, 65535, 65536, 65537, 200000, 3 * 65536 + 17]:
+    data = (MARK * (size // len(MARK) + 1))[:size] if size < 1000 else os.urandom(size // 2) + (MARK * 2000)[: size - size // 2]
+    name = f"archivo secreto {size}.bin"
+    with sf3.open("/Privado/" + name, "wb") as fh:
+        fh.set_pipelined(True)
+        fh.write(data)
+    files[name] = data
+ok = all(sf3.open("/Privado/" + n).read() == d for n, d in files.items())
+check(ok, "SFTP cifrado: lectura igual a lo escrito (0 B a 200 KB, bordes de bloque)")
+check(all(sf3.stat("/Privado/" + n).st_size == len(d) for n, d in files.items()), "SFTP cifrado: tamaños en claro")
+check(sorted(sf3.listdir("/Privado")) == sorted(files), "SFTP cifrado: nombres en claro para eva")
+
+# escrituras en posiciones arbitrarias y huecos
+model = bytearray(files["archivo secreto 200000.bin"])
+rnd = random.Random(7)
+with sf3.open("/Privado/archivo secreto 200000.bin", "r+") as fh:
+    for _ in range(40):
+        off = rnd.randrange(0, len(model) + 70000)
+        chunk = os.urandom(rnd.randrange(1, 90000))
+        fh.seek(off)
+        fh.write(chunk)
+        if off > len(model):
+            model.extend(b"\0" * (off - len(model)))
+        model[off:off + len(chunk)] = chunk
+back = sf3.open("/Privado/archivo secreto 200000.bin").read()
+check(back == bytes(model), "SFTP cifrado: escrituras aleatorias y huecos")
+with sf3.open("/Privado/log.txt", "a") as fh:
+    fh.write(b"uno\n")
+with sf3.open("/Privado/log.txt", "a") as fh:
+    fh.write(b"dos\n")
+check(sf3.open("/Privado/log.txt").read() == b"uno\ndos\n", "SFTP cifrado: añadir al final")
+sf3.mkdir("/Privado/Fotos de vacaciones")
+sf3.open("/Privado/Fotos de vacaciones/playa.jpg", "wb").write(MARK * 10)
+sf3.rename("/Privado/Fotos de vacaciones/playa.jpg", "/Privado/Fotos de vacaciones/mar.jpg")
+check(sf3.listdir("/Privado/Fotos de vacaciones") == ["mar.jpg"], "SFTP cifrado: carpetas y renombrar")
+try:
+    sf3.open("/Privado/" + "x" * 150, "wb").write(b"1")
+    check(False, "nombre demasiado largo rechazado")
+except (IOError, OSError):
+    check(True, "nombre demasiado largo rechazado")
+
+# lo que hay de verdad en el disco
+disk_names, leaked = [], False
+for root, dirs, fnames in os.walk(PRIV):
+    for n in dirs + fnames:
+        disk_names.append(n)
+    for n in fnames:
+        raw = open(os.path.join(root, n), "rb").read()
+        if MARK in raw:
+            leaked = True
+plain_names = set(files) | {"log.txt", "Fotos de vacaciones", "mar.jpg"}
+check(disk_names and not any(n in plain_names or "secreto" in n or "vacaciones" in n for n in disk_names),
+      "en el disco no aparecen los nombres")
+check(not leaked, "en el disco no aparece el contenido")
+check(all(n == n.lower() for n in disk_names), "nombres en disco aptos para exFAT (minúsculas)")
+
+# web de eva
+s, j, _ = eva.req("GET", "/api/fs/list" + q(path="/Privado"))
+check(s == 403 or s == 200, "lista web antes de volver a entrar")
+eva2 = Web()
+eva2.req("POST", "/api/login", {"user": "eva", "pass": "secreta99"})
+s, j, _ = eva2.req("GET", "/api/fs/list" + q(path="/Privado"))
+names_web = sorted(e["name"] for e in j.get("entries", []))
+check(s == 200 and "log.txt" in names_web and "Fotos de vacaciones" in names_web, "web: lista descifrada")
+sizes = {e["name"]: e["size"] for e in j["entries"]}
+check(sizes.get("archivo secreto 65537.bin") == 65537, "web: tamaño en claro")
+s, body, h = eva2.req("GET", "/api/fs/get" + q(path="/Privado/archivo secreto 200000.bin"),
+                      headers={"Range": "bytes=65530-65545"}, raw=True)
+check(s == 206 and body == bytes(model)[65530:65546], "web: descarga parcial descifrada")
+up = os.urandom(300000)
+s, j, _ = eva2.req("PUT", "/api/fs/put" + q(path="/Privado/subido web.bin"), data=up)
+got = sf3.open("/Privado/subido web.bin").read() if s == 200 else b""
+check(s == 200 and got == up, "web: subida cifrada %s %d/%d" % (j if s != 200 else "", len(got), len(up)))
+s, j, _ = eva2.req("POST", "/api/fs/delete" + q(path="/Privado/Fotos de vacaciones"))
+check(s == 200 and "Fotos de vacaciones" not in sf3.listdir("/Privado"), "web: borrar carpeta cifrada")
+
+# el admin y el FTP no ven nada útil
+s, j, _ = admin.req("POST", "/api/admin/user", {"name": "admin", "password": "", "admin": "1", "enabled": "1",
+                                                "can_chpass": "1", "must_chpass": "0",
+                                                "mounts": f"ro|Disco|{BASE}/share"})
+s, j, _ = admin.req("GET", "/api/fs/list" + q(path="/Disco/privada"))
+admin_sees = [e["name"] for e in j["entries"]]
+check(s == 200 and admin_sees and not any(n in plain_names or "secreto" in n for n in admin_sees),
+      "el admin solo ve nombres cifrados")
+s, body, _ = admin.req("GET", "/api/fs/get" + q(path="/Disco/privada/" + admin_sees[0]), raw=True)
+check(MARK not in body, "el admin solo puede bajar datos cifrados")
+fe = ftplib.FTP()
+fe.connect(HOST, 2121, timeout=20)
+fe.login("eva", "secreta99")
+check(fe.nlst("/") == ["Comun"], "FTP no muestra la carpeta privada")
+try:
+    fe.nlst("/Privado")
+    check(False, "FTP no entra en la carpeta privada")
+except ftplib.error_perm:
+    check(True, "FTP no entra en la carpeta privada")
+fe.quit()
+
+# cambio de contraseña por eva: la clave se vuelve a envolver
+s, j, _ = eva2.req("POST", "/api/me/password", {"old": "secreta99", "new": "otraClave7"})
+t3.close()
+t3, sf3 = sftp_connect("eva", "otraClave7")
+check(sf3.open("/Privado/log.txt").read() == b"uno\ndos\n", "tras cambiar su contraseña sigue leyendo sus archivos")
+s, j, _ = admin.req("POST", "/api/admin/user", mk({"mounts": f"rw|Privado|{PRIV}"}))
+check(s == 400, "no se puede quitar el cifrado de una carpeta con archivos")
+
+# el admin le pone otra contraseña: los archivos anteriores quedan ilegibles
+s, j, _ = admin.req("POST", "/api/admin/user", mk({"password": "reseteada1",
+                                                     "mounts": f"enc|Privado|{PRIV}\nrw|Comun|{BASE}/share/inbox"}))
+check(s == 200, "el admin cambia la contraseña de eva")
+try:
+    sf3.listdir("/Privado")
+    t3.close()
+except Exception:
+    pass
+t3, sf3 = sftp_connect("eva", "reseteada1")
+check(sf3.listdir("/Privado") == [], "tras el cambio del admin, los archivos antiguos no se pueden abrir")
+sf3.open("/Privado/nuevo.txt", "wb").write(b"empiezo de cero")
+check(sf3.open("/Privado/nuevo.txt").read() == b"empiezo de cero", "y puede seguir usando la carpeta con su nueva clave")
+t3.close()
 
 print("== Revocación en caliente")
 s, j, _ = admin.req("POST", "/api/admin/user", {"name": "bob", "password": "", "admin": "0",

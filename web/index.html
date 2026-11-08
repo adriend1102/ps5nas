@@ -192,6 +192,10 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
           <div id="mounts"></div>
           <button type="button" class="btn sm" id="b-addmount">+ Añadir carpeta</button>
           <div class="hint">«Nombre» es cómo la verá el usuario. «Ruta» es la carpeta real en la PS5 (p. ej. <code>/mnt/ext0/Peliculas</code>).</div>
+          <div class="hint"><strong>Privada cifrada:</strong> todo lo que guarde ahí se cifra con una clave que sale de su contraseña.
+            Ni tú ni nadie con acceso al disco puede ver los nombres ni el contenido. Debe ser una carpeta nueva o vacía (se crea sola),
+            solo se usa por SFTP y desde la web, y <strong>si le cambias tú la contraseña, pierde para siempre lo que tenga cifrado</strong>.
+            Para que de verdad solo la conozca él, marca «Obligarle a cambiarla».</div>
 
           <div class="err" id="e-user"></div>
           <div class="row" style="margin-top:8px">
@@ -424,9 +428,11 @@ function renderList(){
       acts.append(el("button", {class:"btn sm", onclick:()=>renameItem(it)}, "Renombrar"), " ",
                   el("button", {class:"btn sm danger", onclick:()=>deleteItem(it)}, "Borrar"));
     }
-    const name = el("td", {class:"name", onclick:()=> it.dir ? loadDir(p) : window.open("/api/fs/get?path="+encodeURIComponent(p), "_blank")},
+    const name = el("td", {class:"name", onclick:()=> it.locked ? toast("Cierra sesión y vuelve a entrar para abrir tu carpeta privada")
+                                                     : it.dir ? loadDir(p) : window.open("/api/fs/get?path="+encodeURIComponent(p), "_blank")},
       el("span", {class:"ico"}, it.dir ? "📁" : "📄"), it.name,
-      CUR.root ? el("span", {class:"tag"+(it.rw?" rw":"")}, it.rw ? "lectura y escritura" : "solo lectura") : null,
+      CUR.root ? el("span", {class:"tag"+(it.rw?" rw":"")}, it.enc ? "🔒 privada" : (it.rw ? "lectura y escritura" : "solo lectura")) : null,
+      it.locked ? el("span", {class:"tag", style:"color:var(--danger)"}, "cierra sesión y vuelve a entrar para abrirla") : null,
       it.missing ? el("span", {class:"tag", style:"color:var(--danger)"}, "no disponible") : null);
     tb.append(el("tr", {}, name,
       el("td", {class:"num hide-sm"}, it.dir ? "" : fmtSize(it.size)),
@@ -500,6 +506,7 @@ async function loadUsers(select){
     l.append(el("button", {class: EDIT && EDIT.name === u.name ? "on" : "", onclick:()=>editUser(u)},
       el("span", {class:"grow"}, u.name, u.admin ? el("span",{class:"tag"},"admin") : null,
         u.must_chpass ? el("span",{class:"tag"},"cambio pendiente") : null,
+        u.mounts.some(m => m.enc) ? el("span",{class:"tag"},"🔒") : null,
         !u.enabled ? el("span",{class:"tag",style:"color:var(--danger)"},"desactivado") : null),
       el("small", {}, u.mounts.length + " carpeta(s)")));
   }
@@ -529,8 +536,10 @@ function editUser(u){
 function addMountRow(mt){
   const name = el("input", {type:"text", placeholder:"Nombre (p. ej. Películas)", value: mt ? mt.name : ""});
   const path = el("input", {type:"text", placeholder:"/mnt/ext0/...", value: mt ? mt.path : ""});
-  const rw = el("select", {}, el("option",{value:"ro"},"Solo lectura"), el("option",{value:"rw"},"Lectura y escritura"));
-  rw.value = mt && mt.rw ? "rw" : "ro";
+  const rw = el("select", {}, el("option",{value:"ro"},"Solo lectura"), el("option",{value:"rw"},"Lectura y escritura"),
+    el("option",{value:"enc"},"Privada cifrada"));
+  rw.value = mt && mt.enc ? "enc" : (mt && mt.rw ? "rw" : "ro");
+  rw.title = "Privada cifrada: solo este usuario puede leerla; ni el administrador ve los nombres ni el contenido";
   const row = el("div", {class:"mrow"}, name, path,
     el("button", {type:"button", class:"btn sm", onclick:()=>openPicker(path.value || "/mnt", p => {
       path.value = p;
@@ -554,6 +563,12 @@ $("#f-user").addEventListener("submit", async ev => {
     if (n.includes("|") || p.includes("|")) { $("#e-user").textContent = "No se permite el carácter «|»"; return; }
     lines.push(rw + "|" + n + "|" + p);
   }
+  if (EDIT && EDIT.has_key && f.password.value &&
+      !confirm("«" + EDIT.name + "» tiene carpetas privadas cifradas. Si le cambias tú la contraseña, " +
+               "perderá para siempre el acceso a lo que ya tenga cifrado. ¿Seguir?")) return;
+  if (lines.some(l => l.startsWith("enc|")) && !f.must_chpass.checked && !(EDIT && EDIT.has_key) && f.password.value &&
+      !confirm("Vas a darle una carpeta privada con una contraseña que conoces tú. Si no le obligas a cambiarla, " +
+               "podrías abrir sus archivos. ¿Guardar igualmente?")) return;
   try {
     await api("POST", "/api/admin/user", form({name:f.name.value, password:f.password.value,
       admin: f.admin.checked ? "1" : "0", enabled: f.enabled.checked ? "1" : "0",

@@ -91,8 +91,10 @@ static pthread_mutex_t g_nclients_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct handle {
   int   used;
   int   is_dir;
-  int   fd;
+  int   is_file;
+  vfile_t vf;
   int   rw;
+  int   enc;
   DIR  *dir;
   int   root_idx;           /* para listar la raíz virtual */
   int   done;
@@ -109,6 +111,7 @@ typedef struct sess {
   int      auth_fails;
   int      sftp_ok;
   user_t   user;
+  ukey_t   key;     /* clave de sus carpetas cifradas */
 
   uint8_t *in;      /* paquete entrante */
   size_t   in_len;
@@ -409,7 +412,6 @@ alloc_handle(sess_t *s) {
     if(!s->handles[i].used) {
       memset(&s->handles[i], 0, sizeof(s->handles[i]));
       s->handles[i].used = 1;
-      s->handles[i].fd = -1;
       return i;
     }
   }
@@ -419,10 +421,9 @@ alloc_handle(sess_t *s) {
 
 static void
 close_handle(handle_t *h) {
-  if(h->fd >= 0) close(h->fd);
+  if(h->is_file) vf_close(&h->vf);
   if(h->dir) closedir(h->dir);
   memset(h, 0, sizeof(*h));
-  h->fd = -1;
 }
 
 
@@ -438,7 +439,7 @@ lookup(sess_t *s, reader_t *r, vfs_res_t *res, int *bad) {
     *bad = 1;
     return -1;
   }
-  return vfs_lookup(&s->user, "/", path, res);
+  return vfs_lookup(&s->user, &s->key, "/", path, res);
 }
 
 
@@ -468,7 +469,7 @@ op_stat(sess_t *s, uint32_t id, reader_t *r) {
     memset(&st, 0, sizeof(st));
     st.st_mode = S_IFDIR | 0555;
     st.st_mtime = st.st_atime = time(NULL);
-  } else if(stat(res.real, &st)) {
+  } else if(vfs_stat(&res, &st)) {
     return status_errno(s, id);
   }
   begin(s, FXP_ATTRS, id, 1);
@@ -482,8 +483,10 @@ op_fstat(sess_t *s, uint32_t id, reader_t *r) {
   handle_t *h = get_handle(s, r);
   struct stat st;
   if(!h) return status(s, id, FX_FAILURE, "Handle no válido");
-  if(h->fd >= 0) {
-    if(fstat(h->fd, &st)) return status_errno(s, id);
+  if(h->is_file) {
+    if(fstat(h->vf.fd, &st)) return status_errno(s, id);
+    off_t sz = vf_size(&h->vf);
+    if(sz >= 0) st.st_size = sz;
   } else if(h->real[0]) {
     if(stat(h->real, &st)) return status_errno(s, id);
   } else {
@@ -525,15 +528,14 @@ op_open(sess_t *s, uint32_t id, reader_t *r) {
 
   int idx = alloc_handle(s);
   if(idx < 0) return status(s, id, FX_FAILURE, "Demasiados archivos abiertos");
-  int fd = open(res.real, flags, 0666);
-  if(fd < 0) {
+  handle_t *h = &s->handles[idx];
+  if(vf_open(&h->vf, &res, flags)) {
     int e = errno;
-    s->handles[idx].used = 0;
+    h->used = 0;
     errno = e;
     return status_errno(s, id);
   }
-  handle_t *h = &s->handles[idx];
-  h->fd = fd;
+  h->is_file = 1;
   h->rw = res.rw;
   snprintf(h->vpath, sizeof(h->vpath), "%s", res.vpath);
   snprintf(h->real, sizeof(h->real), "%s", res.real);
@@ -546,8 +548,8 @@ op_close(sess_t *s, uint32_t id, reader_t *r) {
   handle_t *h = get_handle(s, r);
   if(!h) return status(s, id, FX_FAILURE, "Handle no válido");
   int err = 0;
-  if(h->fd >= 0 && close(h->fd)) err = errno;
-  h->fd = -1;
+  if(h->is_file && vf_close(&h->vf)) err = errno;
+  h->is_file = 0;
   close_handle(h);
   if(err) {
     errno = err;
@@ -563,7 +565,7 @@ op_read(sess_t *s, uint32_t id, reader_t *r) {
   uint64_t off = get_u64(r);
   uint32_t len = get_u32(r);
   if(r->err) return status(s, id, FX_BAD_MESSAGE, "Mensaje no válido");
-  if(!h || h->fd < 0) return status(s, id, FX_FAILURE, "Handle no válido");
+  if(!h || !h->is_file) return status(s, id, FX_FAILURE, "Handle no válido");
   if(len > SFTP_MAX_READ) len = SFTP_MAX_READ;
 
   begin(s, FXP_DATA, id, 1);
@@ -571,10 +573,7 @@ op_read(sess_t *s, uint32_t id, reader_t *r) {
   put_u32(s, 0);
   out_reserve(s, len);
   if(s->out_err) return -1;
-  ssize_t n;
-  do {
-    n = pread(h->fd, s->out + s->out_len, len, (off_t)off);
-  } while(n < 0 && errno == EINTR);
+  ssize_t n = vf_pread(&h->vf, s->out + s->out_len, len, (off_t)off);
   if(n < 0) return status_errno(s, id);
   if(n == 0) return status(s, id, FX_EOF, "Fin de archivo");
   s->out_len += (size_t)n;
@@ -593,16 +592,11 @@ op_write(sess_t *s, uint32_t id, reader_t *r) {
   uint32_t len;
   const uint8_t *data = get_str(r, &len);
   if(r->err || !data) return status(s, id, FX_BAD_MESSAGE, "Mensaje no válido");
-  if(!h || h->fd < 0) return status(s, id, FX_FAILURE, "Handle no válido");
+  if(!h || !h->is_file) return status(s, id, FX_FAILURE, "Handle no válido");
   if(!h->rw) return deny(s, id);
 
-  size_t done = 0;
-  while(done < len) {
-    ssize_t n = pwrite(h->fd, data + done, len - done, (off_t)(off + done));
-    if(n < 0 && errno == EINTR) continue;
-    if(n <= 0) return status_errno(s, id);
-    done += (size_t)n;
-  }
+  ssize_t n = vf_pwrite(&h->vf, data, len, (off_t)off);
+  if(n < 0 || (uint32_t)n != len) return status_errno(s, id);
   return status(s, id, FX_OK, "OK");
 }
 
@@ -627,6 +621,7 @@ op_opendir(sess_t *s, uint32_t id, reader_t *r) {
       return status_errno(s, id);
     }
     h->rw = res.rw;
+    h->enc = res.enc;
     snprintf(h->real, sizeof(h->real), "%s", res.real);
   }
   return send_handle(s, id, idx);
@@ -651,6 +646,7 @@ op_readdir(sess_t *s, uint32_t id, reader_t *r) {
     /* Raíz virtual: las carpetas asignadas al usuario. */
     for(; h->root_idx < s->user.nmounts && count < 100; h->root_idx++) {
       const mount_t *m = &s->user.mounts[h->root_idx];
+      if(!vfs_mount_usable(&s->user, &s->key, h->root_idx)) continue;
       if(stat(m->path, &st) || !S_ISDIR(st.st_mode)) continue;
       longname(lname, sizeof(lname), m->name, &st, m->rw);
       put_cstr(s, m->name);
@@ -661,13 +657,18 @@ op_readdir(sess_t *s, uint32_t id, reader_t *r) {
     if(h->root_idx >= s->user.nmounts) h->done = 1;
   } else {
     struct dirent *e;
-    char full[PATH_MAX * 2];
+    char full[PATH_MAX * 2], name[NAME_MAX + 1];
+    vfs_res_t dres;
+    memset(&dres, 0, sizeof(dres));
+    dres.enc = h->enc;
+    dres.key = &s->key;
     while(count < 100 && (e = readdir(h->dir))) {
-      if(!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+      if(vfs_entry_name(&dres, e->d_name, name, sizeof(name))) continue;
       snprintf(full, sizeof(full), "%s/%s", h->real, e->d_name);
       if(lstat(full, &st) || S_ISLNK(st.st_mode)) continue;
-      longname(lname, sizeof(lname), e->d_name, &st, h->rw);
-      put_cstr(s, e->d_name);
+      vfs_fix_size(&dres, &st);
+      longname(lname, sizeof(lname), name, &st, h->rw);
+      put_cstr(s, name);
       put_cstr(s, lname);
       put_attrs(s, &st, h->rw);
       count++;
@@ -879,6 +880,7 @@ cb_auth(byte type, WS_UserAuthData *d, void *ctx) {
   inet_ntop(AF_INET, &s->peer.sin_addr, ip, sizeof(ip));
   int ok = !memchr(d->username, 0, d->usernameSz) &&
            !cfg_authenticate(user, pass, &s->user);
+  if(ok && !s->user.must_chpass) cfg_unlock_key(s->user.name, pass, &s->key);
   memset(pass, 0, sizeof(pass));
 
   if(!ok) {
@@ -1130,6 +1132,7 @@ client_thread(void *p) {
   }
 
   close(s->fd);
+  crypt_key_wipe(&s->key);
   free(s->in);
   free(s->out);
   free(s);
@@ -1194,7 +1197,6 @@ sftp_serve(uint16_t port) {
     }
     s->fd = fd;
     s->peer = peer;
-    for(int i=0; i<SFTP_MAX_HANDLES; i++) s->handles[i].fd = -1;
 
     pthread_t t;
     pthread_attr_t attr;

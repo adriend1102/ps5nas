@@ -116,7 +116,8 @@ deny(ftp_env_t *env) {
 
 static int
 resolve(ftp_env_t *env, const char *arg, vfs_res_t *r) {
-  return vfs_lookup(&env->user, env->cwd, arg, r);
+  /* FTP no cifra nada: las carpetas privadas solo se usan por SFTP/web. */
+  return vfs_lookup(&env->user, NULL, env->cwd, arg, r);
 }
 
 
@@ -568,6 +569,7 @@ do_list(ftp_env_t *env, const char *arg, int kind) {
     if(start_data(env)) return 0;
     for(int i=0; i<env->user.nmounts; i++) {
       const mount_t *m = &env->user.mounts[i];
+      if(m->enc) continue;
       if(stat(m->path, &st)) {
         memset(&st, 0, sizeof(st));
         st.st_mode = S_IFDIR | 0555;
@@ -798,7 +800,7 @@ cmd_RNTO(ftp_env_t *env, const char *arg) {
   vfs_res_t from, to;
   if(!env->has_rnfr) return reply(env, "503 Envía RNFR primero\r\n");
   env->has_rnfr = 0;
-  if(vfs_resolve(&env->user, env->rnfr, &from)) return reply_errno(env);
+  if(vfs_resolve(&env->user, NULL, env->rnfr, &from)) return reply_errno(env);
   if(resolve(env, arg, &to)) return reply_errno(env);
   if(to.mount < 0 || to.is_mount_root || !to.rw || from.mount != to.mount || !from.rw) {
     return deny(env);

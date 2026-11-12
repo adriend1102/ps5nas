@@ -27,7 +27,10 @@ echo $! > "$T/server.pid"     # smoke_test.py lo reinicia para probar la persist
 trap 'kill $(cat "$T/server.pid") 2>/dev/null; rm -rf "$T"' EXIT
 # espera a que estén los tres servicios (la primera vez genera las claves SSH)
 for i in $(seq 1 60); do
-  python3 -c "import socket;[socket.create_connection(('127.0.0.1',p),1).close() for p in (8000,2121,2222)]" 2>/dev/null && break
+  python3 -c "import socket;[socket.create_connection(('127.0.0.1',p),1).close() for p in (8000,2121,2222,8443)]" 2>/dev/null && break
   sleep 1
 done
 python3 test/smoke_test.py 127.0.0.1 "$T"
+# Gestor de contraseñas (API de Bitwarden por HTTPS + web).  Con BW_CLI=/ruta/a/bw
+# se prueba además con la CLI oficial de Bitwarden.
+python3 test/vault_test.py "$T/conf"

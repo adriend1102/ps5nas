@@ -7,3 +7,5 @@
 
 /* Bucle principal del servidor web (no retorna salvo error). */
 int http_serve(uint16_t port);
+/* Servidor HTTPS (hilo propio; nunca retorna). */
+int http_serve_tls(void);

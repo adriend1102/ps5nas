@@ -396,6 +396,9 @@ void read_ports(unsigned &http, unsigned &sftp) noexcept
     find("set\tsftp_port\t", sftp);
 }
 
+/* Puerto HTTPS del gestor de contraseñas (0 = desactivado). */
+unsigned g_https = 0;
+
 /* Pide /api/status al servidor: su IP de Tailscale y el puerto SFTP. */
 bool fetch_status(unsigned http, char *ts_ip, std::size_t ts_len, unsigned &sftp) noexcept
 {
@@ -442,6 +445,15 @@ bool fetch_status(unsigned http, char *ts_ip, std::size_t ts_len, unsigned &sftp
         if (v > 0 && v < 65536)
             sftp = v;
     }
+    const char *h = std::strstr(buf, "\"https_port\":");
+    unsigned hv = 0;
+    if (h)
+    {
+        h += 13;
+        while (*h >= '0' && *h <= '9')
+            hv = hv * 10 + static_cast<unsigned>(*h++ - '0');
+    }
+    g_https = (hv < 65536 && std::strstr(buf, "\"vault\":true")) ? hv : 0;
     return true;
 }
 
@@ -503,7 +515,7 @@ void draw(Canvas &c, const State &st) noexcept
     c.rect(190, 162, 40, 30, lock);
     c.rect(207, 170, 6, 14, bg);
     c.text(260, 112, "PS5NAS", 9, white);
-    c.text(262, 186, "TU NAS EN LA PS5: SFTP, WEB Y CARPETAS PRIVADAS", 3, muted);
+    c.text(262, 186, "TU NAS EN LA PS5: SFTP, WEB, CARPETAS PRIVADAS Y CONTRASENAS", 3, muted);
 
     c.rect(140, 260, 1640, 2, line);
 
@@ -535,38 +547,49 @@ void draw(Canvas &c, const State &st) noexcept
         c.text(196, 380, st.error, 3, bad);
 
     /* conexión */
-    c.rect(140, 420, 1640, 420, panel);
-    c.text(190, 450, "EN CASA (MISMA WIFI)", 3, muted);
-    std::snprintf(buf, sizeof(buf), "WEB   HTTP://%s:%u", st.ip, st.http);
-    c.text(190, 488, buf, 5, white);
-    std::snprintf(buf, sizeof(buf), "SFTP  %s  PUERTO %u", st.ip, st.sftp);
-    c.text(190, 540, buf, 5, white);
-    c.rect(190, 608, 1540, 2, line);
-    c.text(190, 634, "FUERA DE CASA (TAILSCALE)", 3, muted);
+    c.rect(140, 400, 1640, 520, panel);
+    c.text(190, 424, "EN CASA (MISMA WIFI)", 3, muted);
+    std::snprintf(buf, sizeof(buf), "WEB     HTTP://%s:%u", st.ip, st.http);
+    c.text(190, 460, buf, 5, white);
+    std::snprintf(buf, sizeof(buf), "SFTP    %s  PUERTO %u", st.ip, st.sftp);
+    c.text(190, 510, buf, 5, white);
+    if (g_https)
+    {
+        std::snprintf(buf, sizeof(buf), "CLAVES  HTTPS://%s:%u", st.ip, g_https);
+        c.text(190, 560, buf, 5, white);
+    }
+    c.rect(190, 620, 1540, 2, line);
+    c.text(190, 640, "FUERA DE CASA (TAILSCALE)", 3, muted);
     if (st.ts_ip[0])
     {
-        std::snprintf(buf, sizeof(buf), "WEB   HTTP://%s:%u", st.ts_ip, st.http);
-        c.text(190, 672, buf, 5, white);
-        std::snprintf(buf, sizeof(buf), "SFTP  %s  PUERTO %u", st.ts_ip, st.sftp);
-        c.text(190, 724, buf, 5, white);
+        std::snprintf(buf, sizeof(buf), "WEB     HTTP://%s:%u", st.ts_ip, st.http);
+        c.text(190, 676, buf, 5, white);
+        std::snprintf(buf, sizeof(buf), "SFTP    %s  PUERTO %u", st.ts_ip, st.sftp);
+        c.text(190, 726, buf, 5, white);
+        if (g_https)
+        {
+            std::snprintf(buf, sizeof(buf), "CLAVES  HTTPS://%s:%u", st.ts_ip, g_https);
+            c.text(190, 776, buf, 5, white);
+        }
     }
     else
     {
-        c.text(190, 672, "NO SE ENCUENTRA LA IP DE TAILSCALE", 5, warn);
-        c.text(190, 730, "ARRANCA EL PAYLOAD DE TAILSCALE: SU IP APARECERA AQUI SOLA", 3, muted);
+        c.text(190, 676, "NO SE ENCUENTRA LA IP DE TAILSCALE", 5, warn);
+        c.text(190, 734, "ARRANCA EL PAYLOAD DE TAILSCALE: SU IP APARECERA AQUI SOLA", 3, muted);
     }
-    c.text(190, 792, "SFTP: MIS ARCHIVOS DE SAMSUNG, WINSCP, FILEZILLA... CON TU USUARIO", 3, muted);
+    c.text(190, 846, "CLAVES: SERVIDOR PARA LAS APPS Y LA EXTENSION DE BITWARDEN (AUTOALOJADO)", 3, muted);
+    c.text(190, 880, "SFTP: MIS ARCHIVOS DE SAMSUNG, WINSCP, FILEZILLA... CON TU USUARIO", 3, muted);
 
     /* controles */
     if (st.phase == Phase::ready)
     {
-        unsigned x = c.text(140, 890, "X", 5, accent);
-        c.text(x + 20, 890, "ABRIR EL PANEL DE ADMINISTRACION", 5, white);
+        unsigned x = c.text(140, 945, "X", 5, accent);
+        c.text(x + 20, 945, "ABRIR EL PANEL DE ADMINISTRACION", 5, white);
     }
-    unsigned x = c.text(140, 950, "TRIANGULO", 5, accent);
-    c.text(x + 20, 950, "REINICIAR EL SERVIDOR", 5, white);
+    unsigned x = c.text(140, 995, "TRIANGULO", 5, accent);
+    c.text(x + 20, 995, "REINICIAR EL SERVIDOR", 5, white);
     if (st.browser[0])
-        c.text(140, 1020, st.browser, 3, muted);
+        c.text(1000, 1010, st.browser, 3, muted);
 
     /* indicador de actividad */
     if (st.phase == Phase::checking || st.phase == Phase::starting ||

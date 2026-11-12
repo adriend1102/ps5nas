@@ -29,6 +29,10 @@
 
 #include "config.h"
 #include "http.h"
+#include "httpd.h"
+#include "tls.h"
+#include "vault.h"
+#include "vaultweb.h"
 #include "notify.h"
 #include "sha256.h"
 #include "smtp.h"
@@ -40,8 +44,6 @@
 #include "webui.h"
 
 #define HTTP_MAX_CLIENTS   64
-#define HTTP_HDR_MAX       16384
-#define HTTP_BODY_MAX      (256 * 1024)
 #define HTTP_TIMEOUT       60
 #define SESSION_MAX        256
 #define SESSION_TTL        (12 * 3600)
@@ -55,13 +57,7 @@
 /* Buffer dinámico para construir respuestas JSON                      */
 /* ------------------------------------------------------------------ */
 
-typedef struct sb {
-  char  *p;
-  size_t len, cap;
-} sb_t;
-
-
-static void
+void
 sb_putn(sb_t *b, const char *s, size_t n) {
   if(b->len + n + 1 > b->cap) {
     size_t nc = b->cap ? b->cap : 1024;
@@ -77,21 +73,31 @@ sb_putn(sb_t *b, const char *s, size_t n) {
 }
 
 
-static void sb_puts(sb_t *b, const char *s) { sb_putn(b, s, strlen(s)); }
+void sb_puts(sb_t *b, const char *s) { sb_putn(b, s, strlen(s)); }
 
 
-static void
+void
 sb_printf(sb_t *b, const char *fmt, ...) {
   char tmp[512];
   va_list ap;
   va_start(ap, fmt);
   int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
   va_end(ap);
-  if(n > 0) sb_putn(b, tmp, (size_t)n < sizeof(tmp) ? (size_t)n : sizeof(tmp) - 1);
+  if(n > 0 && (size_t)n >= sizeof(tmp)) {
+    char *big = malloc((size_t)n + 1);
+    if(!big) return;
+    va_start(ap, fmt);
+    vsnprintf(big, (size_t)n + 1, fmt, ap);
+    va_end(ap);
+    sb_putn(b, big, (size_t)n);
+    free(big);
+    return;
+  }
+  if(n > 0) sb_putn(b, tmp, (size_t)n);
 }
 
 
-static void
+void
 sb_json_str(sb_t *b, const char *s) {
   sb_putn(b, "\"", 1);
   for(const unsigned char *p = (const unsigned char*)s; *p; p++) {
@@ -119,29 +125,23 @@ sb_json_str(sb_t *b, const char *s) {
 /* Petición                                                            */
 /* ------------------------------------------------------------------ */
 
-typedef struct req {
-  int  fd;
-  struct sockaddr_in peer;
-  char method[8];
-  char path[2048];
-  char query[4096];
-  long long content_length;
-  int  chunked;
-  int  csrf_ok;
-  char cookie_token[80];
-  char range[128];
+/* E/S de la conexión: TCP directo o TLS. */
+long
+req_recv(req_t *r, void *buf, size_t n) {
+  if(r->ssl) return tls_recv(r->ssl, buf, n);
+  for(;;) {
+    ssize_t k = recv(r->fd, buf, n, 0);
+    if(k < 0 && errno == EINTR) continue;
+    return (long)k;
+  }
+}
 
-  char  hdr[HTTP_HDR_MAX];
-  size_t hdr_len;      /* bytes leídos en hdr */
-  size_t body_start;   /* offset del cuerpo dentro de hdr */
 
-  char *body;          /* cuerpo (para formularios) */
-  size_t body_len;
-
-  user_t user;         /* usuario autenticado (si lo hay) */
-  ukey_t key;          /* su clave de cifrado (si la tiene) */
-  int    authed;
-} req_t;
+int
+req_write(req_t *r, const void *buf, size_t n) {
+  if(r->ssl) return tls_writeall(r->ssl, buf, n);
+  return io_writeall(r->fd, buf, n);
+}
 
 
 static int
@@ -174,7 +174,7 @@ url_decode(const char *in, size_t n, char *out, size_t outlen, int plus) {
 
 
 /* Busca NAME en una cadena tipo a=1&b=2 y lo decodifica en OUT. */
-static int
+int
 get_param(const char *qs, const char *name, char *out, size_t outlen) {
   size_t nlen = strlen(name);
   const char *p = qs;
@@ -201,8 +201,7 @@ read_headers(req_t *r) {
   r->hdr_len = 0;
   for(;;) {
     if(r->hdr_len >= sizeof(r->hdr) - 1) return -1;
-    ssize_t n = recv(r->fd, r->hdr + r->hdr_len, sizeof(r->hdr) - 1 - r->hdr_len, 0);
-    if(n < 0 && errno == EINTR) continue;
+    long n = req_recv(r, r->hdr + r->hdr_len, sizeof(r->hdr) - 1 - r->hdr_len);
     if(n <= 0) return -1;
     r->hdr_len += (size_t)n;
     r->hdr[r->hdr_len] = 0;
@@ -258,6 +257,20 @@ parse_request(req_t *r) {
       r->csrf_ok = !strcmp(val, "1");
     } else if(!strcasecmp(line, "Range")) {
       snprintf(r->range, sizeof(r->range), "%s", val);
+    } else if(!strcasecmp(line, "Authorization")) {
+      snprintf(r->auth, sizeof(r->auth), "%s", val);
+    } else if(!strcasecmp(line, "Origin")) {
+      snprintf(r->origin, sizeof(r->origin), "%s", val);
+    } else if(!strcasecmp(line, "Content-Type")) {
+      snprintf(r->ctype, sizeof(r->ctype), "%s", val);
+    } else if(!strcasecmp(line, "Access-Control-Request-Headers")) {
+      snprintf(r->acr_headers, sizeof(r->acr_headers), "%s", val);
+    } else if(!strcasecmp(line, "X-Request-Email")) {
+      snprintf(r->req_email, sizeof(r->req_email), "%s", val);
+    } else if(!strcasecmp(line, "X-Device-Identifier")) {
+      snprintf(r->device_id, sizeof(r->device_id), "%s", val);
+    } else if(!strcasecmp(line, "Host")) {
+      snprintf(r->host, sizeof(r->host), "%s", val);
     } else if(!strcasecmp(line, "Cookie")) {
       const char *c = strstr(val, "ps5s=");
       while(c && c != val && c[-1] != ' ' && c[-1] != ';') c = strstr(c + 1, "ps5s=");
@@ -276,12 +289,18 @@ parse_request(req_t *r) {
 
 
 /* Lee el cuerpo completo (para formularios pequeños). */
-static int
+int
 read_body(req_t *r) {
+  return read_body_max(r, HTTP_BODY_MAX);
+}
+
+
+int
+read_body_max(req_t *r, size_t max) {
   if(r->body) return 0;
   if(r->chunked) return -1;
   long long cl = r->content_length < 0 ? 0 : r->content_length;
-  if(cl > HTTP_BODY_MAX) return -1;
+  if(cl > (long long)max) return -1;
 
   r->body = malloc((size_t)cl + 1);
   if(!r->body) return -1;
@@ -290,8 +309,7 @@ read_body(req_t *r) {
   if(have > (size_t)cl) have = (size_t)cl;
   memcpy(r->body, r->hdr + r->body_start, have);
   while(have < (size_t)cl) {
-    ssize_t n = recv(r->fd, r->body + have, (size_t)cl - have, 0);
-    if(n < 0 && errno == EINTR) continue;
+    long n = req_recv(r, r->body + have, (size_t)cl - have);
     if(n <= 0) return -1;
     have += (size_t)n;
   }
@@ -321,15 +339,17 @@ status_text(int code) {
   case 413: return "Payload Too Large";
   case 416: return "Range Not Satisfiable";
   case 429: return "Too Many Requests";
+  case 500: return "Internal Server Error";
+  case 503: return "Service Unavailable";
   case 507: return "Insufficient Storage";
   default:  return "Error";
   }
 }
 
 
-static int
+int
 send_head(req_t *r, int code, const char *ctype, long long len, const char *extra) {
-  char h[2048];
+  char h[4096];
   int n = snprintf(h, sizeof(h),
                    "HTTP/1.1 %d %s\r\n"
                    "Content-Type: %s\r\n"
@@ -339,23 +359,25 @@ send_head(req_t *r, int code, const char *ctype, long long len, const char *extr
                    "X-Content-Type-Options: nosniff\r\n"
                    "X-Frame-Options: DENY\r\n"
                    "Referrer-Policy: no-referrer\r\n"
-                   "%s\r\n",
-                   code, status_text(code), ctype, len, extra ? extra : "");
+                   "%s%s%s\r\n",
+                   code, status_text(code), ctype, len,
+                   r->tls ? "Strict-Transport-Security: max-age=31536000\r\n" : "",
+                   r->extra_hdr ? r->extra_hdr : "", extra ? extra : "");
   if(n < 0 || (size_t)n >= sizeof(h)) return -1;
-  return io_writeall(r->fd, h, (size_t)n);
+  return req_write(r, h, (size_t)n);
 }
 
 
-static int
+int
 send_body(req_t *r, int code, const char *ctype, const char *body, size_t len,
           const char *extra) {
   if(send_head(r, code, ctype, (long long)len, extra)) return -1;
   if(!strcmp(r->method, "HEAD")) return 0;
-  return io_writeall(r->fd, body, len);
+  return req_write(r, body, len);
 }
 
 
-static int
+int
 send_json(req_t *r, int code, sb_t *b, const char *extra) {
   int ret = send_body(r, code, "application/json; charset=utf-8",
                       b->p ? b->p : "{}", b->p ? b->len : 2, extra);
@@ -365,7 +387,7 @@ send_json(req_t *r, int code, sb_t *b, const char *extra) {
 }
 
 
-static int
+int
 send_err(req_t *r, int code, const char *msg) {
   sb_t b = {0};
   sb_puts(&b, "{\"error\":");
@@ -375,7 +397,7 @@ send_err(req_t *r, int code, const char *msg) {
 }
 
 
-static int
+int
 send_ok(req_t *r) {
   sb_t b = {0};
   sb_puts(&b, "{\"ok\":true}");
@@ -604,7 +626,7 @@ static rl_slot_t g_rl[RL_SLOTS];
 static pthread_mutex_t g_rl_lock = PTHREAD_MUTEX_INITIALIZER;
 
 
-static int
+int
 rl_blocked(uint32_t ip) {
   time_t now = time(NULL);
   int blocked = 0;
@@ -619,7 +641,7 @@ rl_blocked(uint32_t ip) {
 }
 
 
-static void
+void
 rl_fail(uint32_t ip) {
   time_t now = time(NULL);
   int slot = -1, oldest = 0;
@@ -639,7 +661,7 @@ rl_fail(uint32_t ip) {
 }
 
 
-static void
+void
 rl_clear(uint32_t ip) {
   pthread_mutex_lock(&g_rl_lock);
   for(int i=0; i<RL_SLOTS; i++) {
@@ -658,12 +680,13 @@ login_reply(req_t *r, const char *user, const ukey_t *key, int remember) {
   session_create(user, key, remember, token);
   if(remember) {
     snprintf(cookie, sizeof(cookie),
-             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d\r\n",
-             token, SESSION_TTL_LONG);
+             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict%s; Max-Age=%d\r\n",
+             token, r->tls ? "; Secure" : "", SESSION_TTL_LONG);
   } else {
     /* Cookie de sesión: se borra al cerrar el navegador. */
     snprintf(cookie, sizeof(cookie),
-             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict\r\n", token);
+             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict%s\r\n", token,
+             r->tls ? "; Secure" : "");
   }
   sb_puts(&b, "{\"ok\":true}");
   return send_json(r, 200, &b, cookie);
@@ -684,12 +707,16 @@ h_status(req_t *r) {
   int rec_mail = st->recover_email && st->smtp_user[0] && st->smtp_passenc[0];
   int rec_admin = st->recover_admin;
   uint16_t sftp_port = st->sftp_enabled ? st->sftp_port : 0;
+  uint16_t https_port = st->https_enabled ? st->https_port : 0;
+  int vault_on = st->vault_enabled;
   cfg_unlock();
   tsip_get(ts, sizeof(ts));
   sb_printf(&b, "{\"name\":\"PS5NAS\",\"setup\":%s,\"recover_email\":%s,"
-            "\"recover_admin\":%s,\"sftp_port\":%u,\"version\":",
+            "\"recover_admin\":%s,\"sftp_port\":%u,\"https_port\":%u,\"vault\":%s,"
+            "\"secure\":%s,\"version\":",
             setup ? "true" : "false", rec_mail ? "true" : "false",
-            rec_admin ? "true" : "false", sftp_port);
+            rec_admin ? "true" : "false", sftp_port, https_port, vault_on ? "true" : "false",
+            r->tls ? "true" : "false");
   sb_json_str(&b, VERSION_TAG);
   sb_puts(&b, ",\"tailscale_ip\":");
   sb_json_str(&b, ts);
@@ -717,9 +744,11 @@ h_setup(req_t *r) {
   u.admin = 1;
   u.enabled = 1;
   u.can_chpass = 1;
+  u.vault = 1;
   if(!pass[0]) return send_err(r, 400, "Falta la contraseña");
   if(cfg_upsert_user(&u, pass, err, sizeof(err))) return send_err(r, 400, err);
   LOG_PRINTF("ps5share: administrador inicial '%s' creado\n", user);
+  vault_ensure(user, pass);
   return login_reply(r, user, NULL, 0);
 }
 
@@ -745,6 +774,13 @@ h_login(req_t *r) {
   rl_clear(ip);
   ukey_t key;
   cfg_unlock_key(user, pass, &key);
+  {
+    user_t lu;
+    if(!cfg_get_user(user, &lu) && lu.vault && !lu.must_chpass && !vault_has_account(user)) {
+      vault_ensure(user, pass);
+    }
+    memset(&lu, 0, sizeof(lu));
+  }
   memset(pass, 0, sizeof(pass));
   int ret = login_reply(r, user, &key, !strcmp(rem, "1"));
   crypt_key_wipe(&key);
@@ -769,6 +805,10 @@ h_me(req_t *r) {
   sb_json_str(&b, r->user.name);
   sb_puts(&b, ",\"email\":");
   sb_json_str(&b, r->user.email);
+  cfg_lock();
+  int vault_on = cfg_settings()->vault_enabled;
+  cfg_unlock();
+  sb_printf(&b, ",\"vault\":%s", (vault_on && r->user.vault) ? "true" : "false");
   sb_printf(&b, ",\"admin\":%s,\"can_chpass\":%s,\"must_chpass\":%s,\"mounts\":[",
             r->user.admin ? "true" : "false",
             (r->user.can_chpass || r->user.must_chpass) ? "true" : "false",
@@ -806,6 +846,7 @@ h_me_password(req_t *r) {
     if(key.ok) session_set_key(r->cookie_token, &key);
     crypt_key_wipe(&key);
   }
+  if(!ret && r->user.vault) vault_password_changed(r->user.name, newp);
   memset(oldp, 0, sizeof(oldp));
   memset(newp, 0, sizeof(newp));
   if(ret) return send_err(r, 400, err);
@@ -1227,7 +1268,7 @@ h_fs_get(req_t *r) {
     while(left > 0) {
       size_t want = left < IO_BUFSIZE ? (size_t)left : IO_BUFSIZE;
       ssize_t n = vf_pread(&vf, buf, want, pos);
-      if(n <= 0 || io_writeall(r->fd, buf, (size_t)n)) break;
+      if(n <= 0 || req_write(r, buf, (size_t)n)) break;
       pos += n;
       left -= n;
     }
@@ -1286,9 +1327,9 @@ h_fs_put(req_t *r) {
   io_sock_timeouts(r->fd, 300);
   while(!err && remaining > 0) {
     size_t want = remaining < IO_BUFSIZE ? (size_t)remaining : IO_BUFSIZE;
-    ssize_t n = recv(r->fd, buf, want, 0);
-    if(n < 0 && errno == EINTR) continue;
-    if(n <= 0) { err = n == 0 ? EPIPE : errno; break; }
+    errno = 0;
+    ssize_t n = req_recv(r, buf, want);
+    if(n <= 0) { err = (n == 0 || !errno) ? EPIPE : errno; break; }
     if(vf_pwrite(&vf, buf, (size_t)n, pos) != n) { err = errno ? errno : EIO; break; }
     pos += n;
     remaining -= n;
@@ -1385,6 +1426,8 @@ h_fs_rename(req_t *r) {
 static int
 h_admin_users(req_t *r) {
   sb_t b = {0};
+  char vdir[PATH_MAX];
+  cfg_vault_dir(vdir, sizeof(vdir));
   sb_puts(&b, "{\"users\":[");
   cfg_lock();
   for(int i=0; i<cfg_nusers(); i++) {
@@ -1395,10 +1438,11 @@ h_admin_users(req_t *r) {
     sb_puts(&b, ",\"email\":");
     sb_json_str(&b, u->email);
     sb_printf(&b, ",\"admin\":%s,\"enabled\":%s,\"can_chpass\":%s,\"must_chpass\":%s,"
-              "\"has_key\":%s,\"pw_known\":%s,\"mounts\":[",
+              "\"has_key\":%s,\"pw_known\":%s,\"vault\":%s,\"vault_ready\":%s,\"mounts\":[",
               u->admin ? "true" : "false", u->enabled ? "true" : "false",
               u->can_chpass ? "true" : "false", u->must_chpass ? "true" : "false",
-              u->kwrap[0] ? "true" : "false", u->pwenc[0] ? "true" : "false");
+              u->kwrap[0] ? "true" : "false", u->pwenc[0] ? "true" : "false",
+              u->vault ? "true" : "false", vault_has_account_in(vdir, u->name) ? "true" : "false");
     for(int j=0; j<u->nmounts; j++) {
       if(j) sb_puts(&b, ",");
       sb_puts(&b, "{\"name\":");
@@ -1477,6 +1521,8 @@ h_admin_user_save(req_t *r) {
   u.can_chpass = !strcmp(tmp, "1");
   get_param(r->body, "must_chpass", tmp, sizeof(tmp));
   u.must_chpass = !strcmp(tmp, "1");
+  get_param(r->body, "vault", tmp, sizeof(tmp));
+  u.vault = !strcmp(tmp, "1");
   {
     char em[CFG_EMAIL_MAX + 2];
     get_param(r->body, "email", em, sizeof(em));
@@ -1496,6 +1542,12 @@ h_admin_user_save(req_t *r) {
   if(cfg_upsert_user(&u, pass, err, sizeof(err))) return send_err(r, 400, err);
   /* Desactivado o con contraseña nueva: sus sesiones dejan de valer. */
   if(!u.enabled || pass[0]) session_destroy_user(u.name, NULL);
+  /* Gestor de contraseñas: se crea o se vuelve a proteger con la nueva. */
+  if(u.vault) {
+    if(pass[0]) vault_password_changed(u.name, pass);
+    else vault_ensure_stored(u.name);
+  }
+  memset(pass, 0, sizeof(pass));
   LOG_PRINTF("ps5share: '%s' guardó el usuario '%s'\n", r->user.name, u.name);
   return send_ok(r);
 }
@@ -1509,6 +1561,7 @@ h_admin_user_delete(req_t *r) {
   if(!strcmp(name, r->user.name)) return send_err(r, 400, "No puedes borrarte a ti mismo");
   if(cfg_delete_user(name, err, sizeof(err))) return send_err(r, 400, err);
   session_destroy_user(name, NULL);
+  vault_user_deleted(name);
   LOG_PRINTF("ps5share: '%s' borró el usuario '%s'\n", r->user.name, name);
   return send_ok(r);
 }
@@ -1688,6 +1741,26 @@ h_admin_settings_get(req_t *r) {
     sb_puts(&b, ",\"tailscale_ip\":");
     sb_json_str(&b, ts);
   }
+  {
+    char vd[PATH_MAX], fp[128], names[1024];
+    cfg_vault_dir(vd, sizeof(vd));
+    tls_ca_fingerprint(fp, sizeof(fp));
+    tls_cert_names(names, sizeof(names));
+    sb_printf(&b, ",\"vault_enabled\":%s,\"https_enabled\":%s,\"https_port\":%u,"
+              "\"tls_expires\":%lld,\"vault_dir\":", s.vault_enabled ? "true" : "false",
+              s.https_enabled ? "true" : "false", s.https_port, tls_cert_expires());
+    sb_json_str(&b, s.vault_dir);
+    sb_puts(&b, ",\"vault_dir_effective\":");
+    sb_json_str(&b, vd);
+    sb_puts(&b, ",\"vault_domain\":");
+    sb_json_str(&b, s.vault_domain);
+    sb_puts(&b, ",\"tls_names\":");
+    sb_json_str(&b, s.tls_names);
+    sb_puts(&b, ",\"tls_cert_names\":");
+    sb_json_str(&b, names);
+    sb_puts(&b, ",\"ca_fingerprint\":");
+    sb_json_str(&b, fp);
+  }
   sb_puts(&b, ",\"fp_ecdsa\":");
   sb_json_str(&b, sftp_fingerprint_ecdsa());
   sb_puts(&b, ",\"fp_rsa\":");
@@ -1749,6 +1822,29 @@ h_admin_settings_set(req_t *r) {
   }
   if(!get_param(r->body, "recover_email", v, sizeof(v))) s.recover_email = !strcmp(v, "1");
   if(!get_param(r->body, "recover_admin", v, sizeof(v))) s.recover_admin = !strcmp(v, "1");
+  if(!get_param(r->body, "vault_enabled", v, sizeof(v))) s.vault_enabled = !strcmp(v, "1");
+  if(!get_param(r->body, "https_enabled", v, sizeof(v))) s.https_enabled = !strcmp(v, "1");
+  if(!get_param(r->body, "https_port", v, sizeof(v))) s.https_port = (uint16_t)atoi(v);
+  if(!get_param(r->body, "vault_domain", v, sizeof(v))) {
+    if(strlen(v) >= sizeof(s.vault_domain)) return send_err(r, 400, "Dominio demasiado largo");
+    memcpy(s.vault_domain, v, strlen(v) + 1);
+  }
+  {
+    char tn[300];
+    if(!get_param(r->body, "tls_names", tn, sizeof(tn))) {
+      if(strlen(tn) >= sizeof(s.tls_names)) return send_err(r, 400, "Demasiados nombres");
+      memcpy(s.tls_names, tn, strlen(tn) + 1);
+    }
+  }
+  char old_vdir[PATH_MAX], new_vdir_raw[PATH_MAX];
+  cfg_vault_dir(old_vdir, sizeof(old_vdir));
+  int vdir_set = !get_param(r->body, "vault_dir", new_vdir_raw, sizeof(new_vdir_raw));
+  if(vdir_set) {
+    size_t l = strlen(new_vdir_raw);
+    while(l > 1 && new_vdir_raw[l-1] == '/') new_vdir_raw[--l] = 0;
+    if(l >= sizeof(s.vault_dir)) return send_err(r, 400, "Ruta demasiado larga");
+    memcpy(s.vault_dir, new_vdir_raw, l + 1);
+  }
   {
     char sp[256];
     /* Contraseña SMTP: solo se cambia si se escribe una (o se pide borrarla). */
@@ -1767,7 +1863,18 @@ h_admin_settings_set(req_t *r) {
     }
     memset(sp, 0, sizeof(sp));
   }
+  if(vdir_set) {
+    char new_vdir[PATH_MAX + 16];
+    if(s.vault_dir[0]) snprintf(new_vdir, sizeof(new_vdir), "%s", s.vault_dir);
+    else snprintf(new_vdir, sizeof(new_vdir), "%s/vault", cfg_dir());
+    if(s.vault_dir[0] && s.vault_dir[0] != '/') return send_err(r, 400, "La carpeta debe ser una ruta absoluta");
+    /* Primero se mueven las bóvedas; si falla, no se cambia el ajuste. */
+    if(strcmp(old_vdir, new_vdir) && vault_move_dir(old_vdir, new_vdir, err, sizeof(err))) {
+      return send_err(r, 400, err);
+    }
+  }
   if(cfg_update_settings(&s, err, sizeof(err))) return send_err(r, 400, err);
+  tls_refresh(0);      /* por si cambiaron los nombres del certificado */
   return send_ok(r);
 }
 
@@ -1814,6 +1921,16 @@ static const route_t routes[] = {
   {"GET",  "/api/admin/browse",         h_admin_browse,        2},
   {"GET",  "/api/admin/settings",       h_admin_settings_get,  2},
   {"POST", "/api/admin/settings",       h_admin_settings_set,  2},
+  {"POST", "/api/admin/tls",            h_admin_tls_regen,     2},
+  {"GET",  "/api/pw/info",              h_pw_info,             1},
+  {"GET",  "/api/pw/items",             h_pw_items,            1},
+  {"POST", "/api/pw/item",              h_pw_save,             1},
+  {"POST", "/api/pw/item/delete",       h_pw_delete,           1},
+  {"POST", "/api/pw/item/restore",      h_pw_restore,          1},
+  {"POST", "/api/pw/folder",            h_pw_folder,           1},
+  {"POST", "/api/pw/folder/delete",     h_pw_folder_delete,    1},
+  {"POST", "/api/pw/import",            h_pw_import,           1},
+  {"POST", "/api/pw/export",            h_pw_export,           1},
 };
 
 
@@ -1838,6 +1955,10 @@ handle(req_t *r) {
   }
   if(!strcmp(r->path, "/favicon.ico")) {
     send_body(r, 204, "text/plain", "", 0, NULL);
+    return;
+  }
+  if(!strcmp(r->path, "/ps5nas-ca.crt") && !strcmp(r->method, "GET")) {
+    h_pw_ca(r);
     return;
   }
 
@@ -1877,7 +1998,7 @@ handle(req_t *r) {
   }
 
   if(path_found) send_err(r, 405, "Método no permitido");
-  else send_err(r, 404, "No encontrado");
+  else if(!vault_handle(r)) send_err(r, 404, "No encontrado");
 }
 
 
@@ -1895,7 +2016,16 @@ client_thread(void *p) {
 
   io_sock_timeouts(r->fd, HTTP_TIMEOUT);
   setsockopt(r->fd, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
-  handle(r);
+  if(r->tls) {
+    io_sock_timeouts(r->fd, 15);       /* el saludo TLS no puede eternizarse */
+    r->ssl = tls_accept(r->fd);
+    io_sock_timeouts(r->fd, HTTP_TIMEOUT);
+  }
+  if(!r->tls || r->ssl) handle(r);
+  if(r->ssl) {
+    tls_close(r->ssl);
+    r->ssl = NULL;
+  }
 
   shutdown(r->fd, SHUT_WR);
   /* Vacía lo que quede (evita RST que corta la respuesta en el navegador). */
@@ -1914,27 +2044,75 @@ client_thread(void *p) {
 }
 
 
-int
-http_serve(uint16_t port) {
+/* Lanza un hilo para atender la conexión FD.  0 o -1. */
+static int
+spawn_client(int fd, const struct sockaddr_in *peer, int tls) {
+  pthread_mutex_lock(&g_nclients_lock);
+  int full = g_nclients >= HTTP_MAX_CLIENTS;
+  if(!full) g_nclients++;
+  pthread_mutex_unlock(&g_nclients_lock);
+  if(full) {
+    close(fd);
+    return -1;
+  }
+
+  req_t *r = calloc(1, sizeof(*r));
+  if(!r) {
+    close(fd);
+    pthread_mutex_lock(&g_nclients_lock);
+    g_nclients--;
+    pthread_mutex_unlock(&g_nclients_lock);
+    return -1;
+  }
+  r->fd = fd;
+  r->peer = *peer;
+  r->tls = tls;
+
+  pthread_t t;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  pthread_attr_setstacksize(&attr, 1024 * 1024);
+  int e = pthread_create(&t, &attr, client_thread, r);
+  pthread_attr_destroy(&attr);
+  if(e) {
+    close(fd);
+    free(r);
+    pthread_mutex_lock(&g_nclients_lock);
+    g_nclients--;
+    pthread_mutex_unlock(&g_nclients_lock);
+    return -1;
+  }
+  return 0;
+}
+
+
+static int
+listen_on(uint16_t port) {
   struct sockaddr_in sa;
   int srv;
-
   if((srv = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     LOG_PERROR("socket");
     return -1;
   }
   setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
-
   memset(&sa, 0, sizeof(sa));
   sa.sin_family = AF_INET;
   sa.sin_addr.s_addr = htonl(INADDR_ANY);
   sa.sin_port = htons(port);
-
   if(bind(srv, (struct sockaddr*)&sa, sizeof(sa)) || listen(srv, 32)) {
     LOG_PERROR("http bind/listen");
     close(srv);
     return -1;
   }
+  return srv;
+}
+
+
+int
+http_serve(uint16_t port) {
+  int srv = listen_on(port);
+  if(srv < 0) return -1;
   LOG_PRINTF("ps5share: web escuchando en el puerto %u\n", port);
   sessions_load();
 
@@ -1947,42 +2125,57 @@ http_serve(uint16_t port) {
       LOG_PERROR("http accept");
       break;
     }
-
-    pthread_mutex_lock(&g_nclients_lock);
-    int full = g_nclients >= HTTP_MAX_CLIENTS;
-    if(!full) g_nclients++;
-    pthread_mutex_unlock(&g_nclients_lock);
-    if(full) {
-      close(fd);
-      continue;
-    }
-
-    req_t *r = calloc(1, sizeof(*r));
-    if(!r) {
-      close(fd);
-      pthread_mutex_lock(&g_nclients_lock);
-      g_nclients--;
-      pthread_mutex_unlock(&g_nclients_lock);
-      continue;
-    }
-    r->fd = fd;
-    r->peer = peer;
-
-    pthread_t t;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&attr, 1024 * 1024);
-    if(pthread_create(&t, &attr, client_thread, r)) {
-      close(fd);
-      free(r);
-      pthread_mutex_lock(&g_nclients_lock);
-      g_nclients--;
-      pthread_mutex_unlock(&g_nclients_lock);
-    }
-    pthread_attr_destroy(&attr);
+    spawn_client(fd, &peer, 0);
   }
 
   close(srv);
+  return -1;
+}
+
+
+/* Servidor HTTPS: se puede activar, desactivar o cambiar de puerto desde
+   los ajustes sin reiniciar.  Revisa cada minuto si cambiaron las IPs para
+   volver a emitir el certificado. */
+int
+http_serve_tls(void) {
+  time_t last_check = 0;
+  for(;;) {
+    cfg_lock();
+    int enabled = cfg_settings()->https_enabled;
+    uint16_t port = cfg_settings()->https_port;
+    cfg_unlock();
+    if(!enabled) {
+      sleep(2);
+      continue;
+    }
+    int srv = listen_on(port);
+    if(srv < 0) {
+      sleep(10);
+      continue;
+    }
+    LOG_PRINTF("ps5share: HTTPS escuchando en el puerto %u\n", port);
+    for(;;) {
+      if(time(NULL) - last_check >= 60) {
+        last_check = time(NULL);
+        tls_refresh(0);
+      }
+      cfg_lock();
+      int still = cfg_settings()->https_enabled && cfg_settings()->https_port == port;
+      cfg_unlock();
+      if(!still) break;
+      if(io_wait_readable(srv, 1000) <= 0) continue;
+      struct sockaddr_in peer;
+      socklen_t plen = sizeof(peer);
+      int fd = accept(srv, (struct sockaddr*)&peer, &plen);
+      if(fd < 0) {
+        if(errno == EINTR || errno == ECONNABORTED || errno == EAGAIN) continue;
+        LOG_PERROR("https accept");
+        break;
+      }
+      spawn_client(fd, &peer, 1);
+    }
+    close(srv);
+    LOG_PRINTF("ps5share: HTTPS detenido en el puerto %u\n", port);
+  }
   return -1;
 }

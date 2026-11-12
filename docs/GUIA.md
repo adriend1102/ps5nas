@@ -261,6 +261,93 @@ de 64 KiB con AES-256-GCM (nonce aleatorio por bloque, clave propia por
 archivo); nombres con SIV (HMAC-SHA256 + AES-256-CTR) en base32, válido
 también en discos exFAT.
 
+## Gestor de contraseñas (compatible con Bitwarden)
+
+Cada usuario puede tener su propio **gestor de contraseñas** guardado en la
+PS5. Se usa desde la pestaña **Contraseñas** de la web (también en el navegador
+de la consola) y con las **apps oficiales y gratuitas de Bitwarden**: la app de
+Android/iPhone (con autorrelleno), la extensión para Chrome, Edge, Firefox,
+Brave, Opera y Safari, y la app de escritorio. La contraseña es **la misma de
+PS5NAS**.
+
+```
+ Móvil / portátil                         PS5
+ ┌──────────────────────────┐   HTTPS   ┌──────────────────────────────────┐
+ │ App / extensión Bitwarden │ ════════► │ PS5NAS :8443 (certificado propio)│
+ │  servidor «autoalojado»   │ Tailscale │   /data/ps5share/vault/<usuario>  │
+ └──────────────────────────┘           └──────────────────────────────────┘
+```
+
+### Activarlo
+
+1. **Ajustes → Gestor de contraseñas**: viene activado. Puedes elegir la
+   **carpeta donde se guardan los datos** (botón *Elegir…*, p. ej. un disco
+   USB o el SSD M.2); al cambiarla, los datos se mueven solos.
+2. En la ficha de cada usuario marca **Gestor de contraseñas** (viene marcado
+   en los usuarios nuevos y en el administrador inicial). Su gestor se crea al
+   momento si se conoce su contraseña, o la próxima vez que entre en la web.
+3. **Ajustes → HTTPS**: activado en el puerto **8443**. Si usas MagicDNS de
+   Tailscale, añade el nombre (p. ej. `ps5.tu-red.ts.net`) en *Nombres extra
+   para el certificado*.
+
+Para **desactivarlo** para todos, quita *Activar el gestor de contraseñas* en
+Ajustes (se aplica al momento y no se borra nada). Para un solo usuario, quita
+la casilla de su ficha. El HTTPS también se activa, desactiva o cambia de
+puerto al momento.
+
+### Conectar las apps y la extensión
+
+En la pestaña **Contraseñas → Conectar apps** cada usuario ve su servidor, su
+correo de acceso y las instrucciones paso a paso:
+
+1. **Instalar el certificado de la PS5** (una vez por dispositivo). Las apps de
+   Bitwarden solo se conectan por HTTPS y la PS5 firma su propio certificado.
+   Se descarga en `http://IP-DE-TU-PS5:8000/ps5nas-ca.crt` y se instala como
+   *certificado de CA* (Android), perfil + «confianza total» (iPhone), en
+   «Entidades de certificación raíz de confianza» (Windows) o en el llavero
+   (Mac). Comprueba que la huella coincide con la de **Ajustes**.
+2. En Bitwarden, en la pantalla de inicio de sesión, elige **Autoalojado** y
+   pon como URL del servidor `https://IP-DE-TU-PS5:8443` (en casa) o
+   `https://100.x.y.z:8443` (fuera de casa con Tailscale).
+3. Entra con `usuario@ps5nas.local` (el dominio se cambia en Ajustes) y la
+   contraseña de PS5NAS.
+
+El certificado del servidor incluye la IP de casa, la de Tailscale y
+`127.0.0.1`; si cambian, se vuelve a emitir solo y no hay que reinstalar nada.
+Solo hay que reinstalar si pulsas **Crear una CA nueva**.
+
+### Qué se puede hacer
+
+* **Web:** buscar, filtrar por carpeta o tipo, favoritos, ver y copiar
+  usuario/contraseña, generador de contraseñas, inicios de sesión, notas y
+  tarjetas, papelera (restaurar o borrar para siempre), carpetas,
+  **importar** el `.csv` que exportan Google (passwords.google.com), Chrome,
+  Edge, Firefox o Bitwarden, y **exportar** a CSV (pide la contraseña).
+* **Apps de Bitwarden:** todo lo anterior más autorrelleno, códigos TOTP,
+  identidades, claves SSH y campos personalizados.
+* No están disponibles: organizaciones/compartir, adjuntos, Bitwarden Send y
+  verificación en dos pasos de la propia cuenta.
+
+### Contraseñas y seguridad
+
+* El contenido lo cifran las apps (AES-256 + HMAC, clave derivada con
+  PBKDF2-SHA256 de 600 000 iteraciones). En el disco solo hay datos cifrados.
+* Como la contraseña es la de PS5NAS, al cambiarla (en **Mi cuenta**, o el
+  administrador en la ficha) la consola vuelve a proteger la clave del gestor
+  con la nueva: no se pierde nada y las apps piden volver a entrar. Desde la
+  app de Bitwarden no se puede cambiar la contraseña.
+* Si el administrador obliga a cambiar la contraseña temporal, las apps no
+  dejan entrar hasta que el usuario la cambie en la web.
+* La web descifra en la consola (así funciona también sin HTTPS y en el
+  navegador de la PS5), con una copia de la clave sellada con `master.key`.
+  Igual que con las carpetas privadas: protege frente a quien lea el disco y
+  frente a los demás usuarios, pero el administrador, que puede ver las
+  contraseñas de PS5NAS, podría entrar con la cuenta de otro.
+* Al borrar un usuario, su gestor se renombra a `<usuario>.json.borrado` en la
+  carpeta de datos (por si fue un error).
+* **No bloquees el puerto 8443** en Tailscale si quieres usar las apps fuera
+  de casa.
+
 ## Seguridad
 
 * Contraseñas comprobadas con PBKDF2-SHA256 (20 000 iteraciones, sal
@@ -320,7 +407,7 @@ export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 Con el [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) en Linux o WSL:
 
 ```sh
-./third_party/fetch.sh          # una vez: wolfSSL v5.9.4 y wolfSSH v1.6.0
+./third_party/fetch.sh          # una vez: wolfSSL v5.9.4, wolfSSH v1.6.0 y cJSON v1.7.19
 export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 make -f Makefile.ps5            # genera ps5share.elf
 make -f Makefile.ps5 test PS5_HOST=192.168.100.208   # compila y envía
@@ -329,7 +416,8 @@ make -f Makefile.ps5 test PS5_HOST=192.168.100.208   # compila y envía
 Para probar en Linux sin consola:
 
 ```sh
-./test/run_tests.sh             # compila la versión Linux y pasa ~135 pruebas
+./test/run_tests.sh             # compila la versión Linux y pasa ~240 pruebas
+BW_CLI=$(which bw) ./test/run_tests.sh   # además con la CLI oficial de Bitwarden
 ./ps5share-linux -d ./datos     # web en :8000, SFTP en :2222
 ```
 
@@ -347,7 +435,11 @@ Para probar en Linux sin consola:
 | `app/` | App de la pantalla de inicio (eboot.bin) |
 | `src/ftp.c` | Servidor FTP (derivado de ftpsrv) con login y permisos |
 | `third_party/` | Configuración de wolfSSL/wolfSSH y script de descarga |
-| `src/http.c` | Servidor web y API JSON |
+| `src/http.c` | Servidor web (HTTP y HTTPS) y API JSON |
+| `src/tls.c` | CA propia de la consola, certificado del servidor y TLS |
+| `src/vault.c` | API compatible con Bitwarden (inicio de sesión, sincronización, elementos) |
+| `src/vaultweb.c` | Pestaña «Contraseñas» de la web (cifra y descifra en la consola) |
+| `src/bwcrypto.c` | Criptografía de Bitwarden: PBKDF2, HKDF, AES-CBC+HMAC, RSA, JWT |
 | `web/index.html` | Interfaz web (se incrusta en el ELF con `tools/embed.py`) |
 | `src/main-prospero.c` | Arranque en PS5 |
 
@@ -374,6 +466,11 @@ ukey	ana	<sal>	<clave de datos envuelta>
 pw	ana	<contraseña cifrada con master.key>
 email	ana	ana@example.com
 ```
+
+El gestor usa `vault_enabled`, `vault_dir` (vacía = `/data/ps5share/vault`),
+`vault_domain`, `https_enabled`, `https_port` y `tls_names`, y una línea
+`vault	<usuario>` por cada usuario con gestor. La CA y el certificado están en
+`/data/ps5share/tls/`.
 
 Los ajustes de correo son `smtp_host`, `smtp_port`, `smtp_user`, `smtp_pass`
 (cifrada), `smtp_from_name`, `recover_email` y `recover_admin`.

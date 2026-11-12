@@ -46,6 +46,7 @@ typedef struct user {
   char kwrap[121];            /* DEK envuelta (vacía si aún no tiene) */
   char pwenc[CRYPT_SEAL_HEX+1]; /* contraseña cifrada con la clave maestra (vacía = no se conoce) */
   char email[CFG_EMAIL_MAX+1];  /* correo de recuperación */
+  int  vault;                   /* puede usar el gestor de contraseñas */
   int  nmounts;
   mount_t mounts[CFG_MAX_MOUNTS];
 } user_t;
@@ -68,6 +69,14 @@ typedef struct settings {
   char     smtp_from_name[64];
   int      recover_email;     /* permitir «olvidé mi contraseña» por correo */
   int      recover_admin;     /* permitir pedir la contraseña a un administrador */
+  /* Gestor de contraseñas (compatible con Bitwarden) */
+  int      vault_enabled;
+  char     vault_dir[PATH_MAX];   /* carpeta de datos (vacía = CONFIG/vault) */
+  char     vault_domain[64];      /* usuario@dominio para iniciar sesión en Bitwarden */
+  /* HTTPS con certificado propio de la consola */
+  int      https_enabled;
+  uint16_t https_port;
+  char     tls_names[256];        /* nombres o IPs extra para el certificado */
 } settings_t;
 
 
@@ -131,3 +140,9 @@ int  cfg_set_email(const char *name, const char *email, char *err, size_t errlen
 int  cfg_smtp_password(char *out, size_t outlen);
 int  cfg_set_smtp_password(settings_t *s, const char *pass);
 const char *cfg_dir(void);
+/* Secretos cortos sellados con la clave maestra de la consola. */
+int  cfg_seal(const char *aad, const void *plain, size_t len, char *out_hex, size_t outlen);
+int  cfg_unseal(const char *aad, const char *hex, void *out, size_t outlen);
+/* Carpeta de datos efectiva del gestor de contraseñas. */
+void cfg_vault_dir(char *out, size_t outlen);
+int  cfg_valid_hostname_list(const char *s);

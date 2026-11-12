@@ -17,6 +17,8 @@
 #include "ftp.h"
 #include "http.h"
 #include "sftp.h"
+#include "tls.h"
+#include "vault.h"
 #include "log.h"
 
 
@@ -29,6 +31,13 @@ sftp_thread(void *arg) {
     sftp_serve(port);
     sleep(5);
   }
+  return NULL;
+}
+
+
+static void*
+https_thread(void *arg) {
+  http_serve_tls();
   return NULL;
 }
 
@@ -92,11 +101,17 @@ app_run(const char *confdir, void (*notify_fn)(const char *msg)) {
   cfg_unlock();
 
   int sftp_ok = s.sftp_enabled && !sftp_init(confdir);
+  vault_init(confdir);
+  int tls_ok = !tls_init(confdir);
 
   int n = snprintf(msg, sizeof(msg), "PS5NAS %s\nWeb: http://%s:%u",
                    VERSION_TAG, ip[0] ? ip : "?", s.http_port);
   if(sftp_ok) n += snprintf(msg + n, sizeof(msg) - n, "\nSFTP: %s:%u", ip[0] ? ip : "?", s.sftp_port);
   if(s.ftp_enabled) n += snprintf(msg + n, sizeof(msg) - n, "\nFTP: %s:%u", ip[0] ? ip : "?", s.ftp_port);
+  if(tls_ok && s.https_enabled && s.vault_enabled) {
+    n += snprintf(msg + n, sizeof(msg) - n, "\nContraseñas: https://%s:%u", ip[0] ? ip : "?",
+                  s.https_port);
+  }
   if(setup) snprintf(msg + n, sizeof(msg) - n, "\nAbre la web para crear el administrador");
   LOG_PRINTF("%s\n", msg);
   if(notify_fn) notify_fn(msg);
@@ -106,6 +121,7 @@ app_run(const char *confdir, void (*notify_fn)(const char *msg)) {
   pthread_attr_setstacksize(&attr, 512 * 1024);
   if(sftp_ok) pthread_create(&t, &attr, sftp_thread, NULL);
   if(s.ftp_enabled) pthread_create(&t, &attr, ftp_thread, NULL);
+  if(tls_ok) pthread_create(&t, &attr, https_thread, NULL);
   pthread_attr_destroy(&attr);
 
   for(;;) {

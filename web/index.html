@@ -129,6 +129,23 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
   font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;padding:14px;outline:none}
 .vbody.text{background:var(--panel)}
 .vbody .msg{color:#ccc;padding:20px;text-align:center}
+/* contraseñas */
+.pwlist{max-height:70vh;overflow:auto}
+.pwlist button{display:flex;width:100%;text-align:left;gap:10px;align-items:center;background:none;
+  border:0;border-bottom:1px solid var(--line);padding:10px 14px;cursor:pointer}
+.pwlist button.on{background:var(--chip)}
+.pwlist .pi{width:30px;height:30px;border-radius:8px;background:var(--chip);display:grid;place-items:center;flex:none;font-size:15px}
+.pwlist .pt{flex:1;min-width:0}
+.pwlist .pt div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pwlist small{color:var(--muted)}
+.fieldrow{display:flex;gap:6px;align-items:center}
+.fieldrow > :first-child{flex:1;min-width:0}
+.gen{background:var(--chip);border-radius:8px;padding:10px 12px;margin-top:8px}
+.gen input[type=range]{width:100%}
+.steps li{margin:6px 0}
+.urls code{display:inline-block;margin:2px 4px 2px 0;font-size:14px}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;font-size:14px}
+.kv span:nth-child(odd){color:var(--muted)}
 </style>
 </head>
 <body>
@@ -255,6 +272,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
     <div class="brand"><svg class="logo" style="color:var(--accent)"><use href="#logo"/></svg><span class="hide-sm">PS5NAS</span></div>
     <nav>
       <button data-tab="files" class="on">Archivos</button>
+      <button data-tab="pw" id="nav-pw" class="hidden">Contraseñas</button>
       <button data-tab="users" class="adm">Usuarios<span class="badge hidden" id="reqbadge"></span></button>
       <button data-tab="settings" class="adm">Ajustes</button>
     </nav>
@@ -275,6 +293,114 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
       </div>
       <div id="flist"></div>
       <div class="up hidden" id="upbox"><div id="uptext"></div><div class="bar"><i id="upbar"></i></div></div>
+    </section>
+
+    <!-- Contraseñas -->
+    <section id="t-pw" class="hidden">
+      <div class="card" style="margin-bottom:16px">
+        <div class="toolbar">
+          <input type="text" id="pw-q" class="grow" placeholder="Buscar por nombre, usuario o web…" style="width:auto;min-width:160px">
+          <select id="pw-filter" style="width:auto"></select>
+          <button class="btn sm primary" id="b-pwnew">Nuevo</button>
+          <button class="btn sm" id="b-pwfolders">Carpetas</button>
+          <button class="btn sm" id="b-pwimport">Importar</button>
+          <button class="btn sm" id="b-pwexport">Exportar</button>
+          <button class="btn sm" id="b-pwapps">Conectar apps</button>
+          <input type="file" id="i-pwimport" accept=".csv,text/csv" class="hidden">
+        </div>
+      </div>
+
+      <div class="card pad hidden" id="pw-apps" style="margin-bottom:16px">
+        <div class="row"><h2 class="grow">Usar tus contraseñas en el móvil, el ordenador y el navegador</h2>
+          <button class="btn sm" id="b-pwapps-close">Cerrar</button></div>
+        <div class="hint">Funciona con las apps oficiales y gratuitas de <strong>Bitwarden</strong>: la app del móvil (con autorrelleno),
+          la extensión para Chrome, Edge, Firefox, Brave, Opera y Safari, y la app de escritorio. Todo se guarda solo en tu PS5.</div>
+        <div class="kv" style="margin-top:12px">
+          <span>Servidor (autoalojado)</span><span class="urls" id="pw-urls"></span>
+          <span>Correo para entrar</span><span><code id="pw-email"></code></span>
+          <span>Contraseña</span><span>la misma de PS5NAS</span>
+        </div>
+        <h2 style="margin-top:18px">1. Instala el certificado de tu PS5 (una vez por dispositivo)</h2>
+        <div class="hint">Las apps de Bitwarden solo se conectan por HTTPS. Tu PS5 tiene su propio certificado; instálalo para que tus
+          dispositivos confíen en ella. Huella: <code id="pw-fp"></code></div>
+        <div class="row" style="margin-top:8px"><a class="btn primary" href="/ps5nas-ca.crt" download>Descargar certificado (PS5NAS-CA.crt)</a></div>
+        <ul class="steps hint">
+          <li><strong>Android:</strong> Ajustes → Seguridad y privacidad → Más ajustes → Cifrado y credenciales → Instalar certificado →
+            <em>Certificado de CA</em> → elige <code>PS5NAS-CA.crt</code>. (En Samsung: Ajustes → Seguridad → Otros ajustes de seguridad → Instalar desde almacenamiento.)</li>
+          <li><strong>iPhone / iPad:</strong> abre el archivo descargado → Ajustes → <em>Perfil descargado</em> → Instalar. Después:
+            Ajustes → General → Información → <em>Ajustes de confianza de certificados</em> → activa «PS5NAS CA».</li>
+          <li><strong>Windows:</strong> doble clic en el archivo → Instalar certificado → Equipo local → <em>Colocar todos los certificados en
+            el siguiente almacén</em> → «Entidades de certificación raíz de confianza». Chrome, Edge y Firefox lo usarán.</li>
+          <li><strong>Mac:</strong> doble clic → se abre Acceso a Llaveros → busca «PS5NAS CA» → Obtener información → Confiar → «Confiar siempre».</li>
+        </ul>
+        <h2 style="margin-top:14px">2. Conecta la app o la extensión</h2>
+        <ol class="steps hint">
+          <li>Instala Bitwarden (Google Play, App Store, la tienda de extensiones de tu navegador o bitwarden.com/download).</li>
+          <li>En la pantalla de inicio de sesión, en «Accediendo a» / «Iniciando sesión en», elige <strong>Autoalojado</strong>.</li>
+          <li>En «URL del servidor» pega una de las direcciones de arriba (la <code>100.x</code> funciona fuera de casa con Tailscale) y guarda.</li>
+          <li>Entra con tu correo de arriba y tu contraseña de PS5NAS.</li>
+          <li>En el móvil, activa el autorrelleno: Ajustes de Bitwarden → Autorrelleno.</li>
+        </ol>
+        <div class="hint">Si cambias tu contraseña de PS5NAS, las apps te pedirán volver a entrar con la nueva.</div>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <div class="pwlist" id="pwlist"></div>
+        </div>
+        <form class="card pad" id="f-pw" autocomplete="off">
+          <div class="row"><h2 class="grow" id="pw-title">Nuevo elemento</h2>
+            <label class="check" style="margin:0"><input type="checkbox" name="favorite"> ★ Favorito</label></div>
+          <div class="row" style="margin-top:4px">
+            <div class="grow"><label class="f">Tipo</label>
+              <select name="type"><option value="1">Inicio de sesión</option><option value="2">Nota segura</option><option value="3">Tarjeta</option></select></div>
+            <div class="grow"><label class="f">Carpeta</label><select name="folder"></select></div>
+          </div>
+          <label class="f">Nombre</label><input type="text" name="name" required maxlength="300">
+          <div id="pw-login">
+            <label class="f">Usuario</label>
+            <div class="fieldrow"><input type="text" name="username" autocomplete="off"><button type="button" class="btn sm" data-copy="username">Copiar</button></div>
+            <label class="f">Contraseña</label>
+            <div class="fieldrow"><input type="password" name="password" autocomplete="new-password"><button type="button" class="btn sm" data-copy="password">Copiar</button>
+              <button type="button" class="btn sm" id="b-gen">Generar</button></div>
+            <div class="gen hidden" id="gen">
+              <div class="row"><span class="grow">Longitud: <strong id="gen-len">20</strong></span>
+                <label class="check" style="margin:0"><input type="checkbox" id="gen-up" checked> A-Z</label>
+                <label class="check" style="margin:0"><input type="checkbox" id="gen-num" checked> 0-9</label>
+                <label class="check" style="margin:0"><input type="checkbox" id="gen-sym" checked> !@#</label></div>
+              <input type="range" id="gen-range" min="8" max="64" value="20">
+              <div class="row"><code class="grow" id="gen-out"></code><button type="button" class="btn sm" id="gen-again">Otra</button>
+                <button type="button" class="btn sm primary" id="gen-use">Usar</button></div>
+            </div>
+            <label class="f">Webs (una por línea)</label>
+            <textarea name="uris" rows="2" placeholder="https://www.ejemplo.com"></textarea>
+            <label class="f">Clave de verificación en dos pasos (TOTP, opcional)</label>
+            <input type="text" name="totp" placeholder="p. ej. JBSWY3DPEHPK3PXP o otpauth://…" autocomplete="off">
+            <div class="hint">Las apps de Bitwarden te mostrarán el código de 6 cifras.</div>
+          </div>
+          <div id="pw-card" class="hidden">
+            <label class="f">Titular</label><input type="text" name="cardholderName">
+            <div class="row">
+              <div class="grow"><label class="f">Número</label><input type="text" name="number" inputmode="numeric"></div>
+              <div style="width:140px"><label class="f">Marca</label><input type="text" name="brand" placeholder="Visa"></div>
+            </div>
+            <div class="row">
+              <div class="grow"><label class="f">Mes</label><input type="text" name="expMonth" placeholder="12"></div>
+              <div class="grow"><label class="f">Año</label><input type="text" name="expYear" placeholder="2030"></div>
+              <div class="grow"><label class="f">CVV</label><input type="password" name="code" autocomplete="off"></div>
+            </div>
+          </div>
+          <label class="f">Notas</label><textarea name="notes" rows="3"></textarea>
+          <div id="pw-extra" class="hint"></div>
+          <div class="err" id="e-pw"></div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn primary" id="b-pwsave">Guardar</button>
+            <button type="button" class="btn ok hidden" id="b-pwrestore">Restaurar</button>
+            <span class="grow"></span>
+            <button type="button" class="btn danger hidden" id="b-pwdel">Mover a la papelera</button>
+          </div>
+        </form>
+      </div>
     </section>
 
     <!-- Usuarios -->
@@ -307,6 +433,8 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
           <label class="check"><input type="checkbox" name="admin"> Administrador (puede gestionar usuarios y ajustes)</label>
           <label class="check"><input type="checkbox" name="can_chpass" checked> Puede cambiar su propia contraseña desde la web</label>
           <label class="check"><input type="checkbox" name="must_chpass"> Obligarle a cambiarla al iniciar sesión en la web (hasta entonces no entra por SFTP)</label>
+          <label class="check"><input type="checkbox" name="vault" checked> Gestor de contraseñas (web y apps de Bitwarden, con la misma contraseña)</label>
+          <div class="hint" id="u-vault-hint"></div>
 
           <label class="f" style="margin-top:18px">Carpetas a las que tiene acceso</label>
           <div id="mounts"></div>
@@ -336,6 +464,35 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
         <h2 style="margin-top:22px">Ajustes del servidor</h2>
         <div class="hint">Los cambios de puertos y la activación de SFTP/FTP se aplican al volver a cargar el payload.</div>
         <label class="f">Puerto web</label><input type="number" name="http_port" min="1" max="65535">
+
+        <h2 style="margin-top:22px">Gestor de contraseñas (compatible con Bitwarden)</h2>
+        <label class="check"><input type="checkbox" name="vault_enabled"> Activar el gestor de contraseñas</label>
+        <div class="hint">Al desactivarlo, nadie puede entrar en sus contraseñas (ni desde la web ni desde las apps) hasta que lo vuelvas a activar.
+          No se borra nada.</div>
+        <label class="f">Carpeta donde se guardan los datos</label>
+        <div class="fieldrow"><input type="text" name="vault_dir" placeholder="(por defecto, junto a la configuración)">
+          <button type="button" class="btn sm" id="b-vaultdir">Elegir…</button></div>
+        <div class="hint">Ahora: <code id="vaultdir-eff"></code>. Un archivo por usuario, con el contenido ya cifrado por las apps.
+          Si la cambias, los datos se mueven solos a la nueva carpeta.</div>
+        <label class="f">Dominio de los correos para entrar</label>
+        <input type="text" name="vault_domain" placeholder="ps5nas.local">
+        <div class="hint">Cada usuario entra en Bitwarden como <code>usuario@<span id="vdom">ps5nas.local</span></code>. Solo afecta a los usuarios nuevos.</div>
+
+        <h2 style="margin-top:22px">HTTPS (certificado propio de la PS5)</h2>
+        <label class="check"><input type="checkbox" name="https_enabled"> Activar HTTPS (lo necesitan las apps de Bitwarden)</label>
+        <div class="row">
+          <div style="width:140px"><label class="f">Puerto HTTPS</label><input type="number" name="https_port" min="1" max="65535"></div>
+          <div class="grow"><label class="f">Nombres extra para el certificado (opcional)</label>
+            <input type="text" name="tls_names" placeholder="p. ej. ps5 ps5.tu-red.ts.net"></div>
+        </div>
+        <div class="hint">El certificado ya incluye las IPs de casa y de Tailscale (se renueva solo si cambian). Añade aquí el nombre MagicDNS
+          de Tailscale si quieres entrar por nombre. El HTTPS se activa, desactiva o cambia de puerto al momento.</div>
+        <div class="kv" style="margin-top:8px" id="tls-info"></div>
+        <div class="row" style="margin-top:8px">
+          <a class="btn sm" href="/ps5nas-ca.crt" download>Descargar certificado de la CA</a>
+          <button type="button" class="btn sm" id="b-tlsrenew">Volver a emitir el certificado</button>
+          <button type="button" class="btn sm danger" id="b-tlsca">Crear una CA nueva…</button>
+        </div>
 
         <h2 style="margin-top:22px">SFTP (recomendado, cifrado)</h2>
         <label class="check"><input type="checkbox" name="sftp_enabled"> Activar SFTP</label>
@@ -612,7 +769,7 @@ function showAccount(forced){
   $("#chpass-title").textContent = forced ? "Cambiar contraseña" : "Mi cuenta";
   $("#chpass-msg").textContent = forced
     ? "Antes de continuar tienes que cambiar la contraseña que te dio el administrador. Hasta que lo hagas no podrás entrar por SFTP."
-    : "Cambia tu contraseña. Recuerda usar la nueva también en tus apps SFTP.";
+    : "Cambia tu contraseña. Recuerda usar la nueva también en tus apps SFTP" + (ME.vault ? " y en las apps de Bitwarden." : ".");
   f.classList.toggle("hidden", !forced && !ME.can_chpass);
   $("#chpass-email-box").classList.toggle("hidden", !forced);
   f.email.value = ME.email || "";
@@ -653,7 +810,9 @@ function startApp(){
   show("v-app");
   $("#who").textContent = ME.user + (ME.admin ? " · admin" : "");
   $$(".adm").forEach(b => b.classList.toggle("hidden", !ME.admin));
-  openTab("files");
+  $("#nav-pw").classList.toggle("hidden", !ME.vault);
+  const want = location.hash === "#pw" && ME.vault ? "pw" : "files";
+  openTab(want);
   if (ME.admin) pollRequests();
 }
 
@@ -662,8 +821,9 @@ let TAB = "files";
 function openTab(t){
   TAB = t;
   $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
-  for (const s of ["files","users","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
+  for (const s of ["files","pw","users","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
   if (t === "files") loadDir(CWD);
+  if (t === "pw") loadPw();
   if (t === "users") { loadUsers(); pollRequests(); }
   if (t === "settings") loadSettings();
 }
@@ -944,6 +1104,7 @@ async function loadUsers(select){
       el("span", {class:"grow"}, u.name, u.admin ? el("span",{class:"tag"},"admin") : null,
         u.must_chpass ? el("span",{class:"tag"},"cambio pendiente") : null,
         u.mounts.some(m => m.enc) ? el("span",{class:"tag"},"🔒") : null,
+        u.vault ? el("span",{class:"tag",title:"Gestor de contraseñas"},"🔑") : null,
         !u.enabled ? el("span",{class:"tag",style:"color:var(--danger)"},"desactivado") : null),
       el("small", {}, u.mounts.length + " carpeta(s)")));
   }
@@ -970,6 +1131,11 @@ function editUser(u){
   f.admin.checked = u ? u.admin : false;
   f.can_chpass.checked = u ? u.can_chpass : true;
   f.must_chpass.checked = u ? u.must_chpass : false;
+  f.vault.checked = u ? u.vault : true;
+  $("#u-vault-hint").textContent = u && u.vault
+    ? (u.vault_ready ? "Entra en Bitwarden como " + u.name.toLowerCase() + "@… (lo ve en su pestaña Contraseñas)."
+                     : "Su gestor se preparará la próxima vez que entre en la web.")
+    : "";
   $("#b-deluser").classList.toggle("hidden", !u);
   $("#e-user").textContent = "";
   const m = $("#mounts"); m.textContent = "";
@@ -1023,7 +1189,7 @@ $("#f-user").addEventListener("submit", async ev => {
     await api("POST", "/api/admin/user", form({name:f.name.value, password:f.password.value, email:f.email.value.trim(),
       admin: f.admin.checked ? "1" : "0", enabled: f.enabled.checked ? "1" : "0",
       can_chpass: f.can_chpass.checked ? "1" : "0", must_chpass: f.must_chpass.checked ? "1" : "0",
-      mounts: lines.join("\n")}));
+      vault: f.vault.checked ? "1" : "0", mounts: lines.join("\n")}));
     toast("Usuario guardado");
     loadUsers(f.name.value);
     pollRequests();
@@ -1068,7 +1234,14 @@ async function loadSettings(){
   const f = $("#f-settings");
   resetEyes(f);
   for (const k of ["ftp_port","http_port","sftp_port","pasv_min","pasv_max","pasv_address","smtp_user","smtp_host","smtp_port","smtp_from_name"]) f[k].value = s[k];
-  for (const k of ["sftp_enabled","ftp_enabled","recover_email","recover_admin"]) f[k].checked = s[k];
+  for (const k of ["sftp_enabled","ftp_enabled","recover_email","recover_admin","vault_enabled","https_enabled"]) f[k].checked = s[k];
+  for (const k of ["vault_dir","vault_domain","https_port","tls_names"]) f[k].value = s[k];
+  $("#vaultdir-eff").textContent = s.vault_dir_effective;
+  $("#vdom").textContent = s.vault_domain;
+  const ti = $("#tls-info"); ti.textContent = "";
+  ti.append(el("span", {}, "Huella de la CA"), el("span", {}, el("code", {}, s.ca_fingerprint || "—")),
+            el("span", {}, "Válido para"), el("span", {}, el("code", {}, s.tls_cert_names || "—")),
+            el("span", {}, "Caduca"), el("span", {}, s.tls_expires ? fmtDate(s.tls_expires) + " (se renueva solo)" : "—"));
   f.smtp_pass.value = "";
   $("#smtp-pass-state").textContent = s.smtp_pass_set ? "(guardada)" : "(sin configurar)";
   if (!$("#i-testmail").value) $("#i-testmail").value = ME.email || "";
@@ -1084,6 +1257,7 @@ async function loadSettings(){
     const d = el("div", {style:"margin-top:4px"}, el("strong", {}, label + ": "));
     if (s.sftp_enabled) d.append("SFTP ", el("code",{}, ip), " puerto ", el("code",{}, String(s.sftp_port)), " · ");
     d.append("web ", el("code", {}, "http://" + ip + ":" + s.http_port));
+    if (s.https_enabled) d.append(" · HTTPS ", el("code", {}, "https://" + ip + ":" + s.https_port));
     if (s.ftp_enabled) d.append(" · FTP ", el("code",{}, "ftp://" + ip + ":" + s.ftp_port));
     return d;
   };
@@ -1103,11 +1277,26 @@ $("#f-settings").addEventListener("submit", async ev => {
       sftp_enabled: f.sftp_enabled.checked ? "1" : "0", ftp_enabled: f.ftp_enabled.checked ? "1" : "0",
       recover_email: f.recover_email.checked ? "1" : "0", recover_admin: f.recover_admin.checked ? "1" : "0",
       smtp_user:f.smtp_user.value.trim(), smtp_pass:f.smtp_pass.value, smtp_host:f.smtp_host.value.trim(),
-      smtp_port:f.smtp_port.value, smtp_from_name:f.smtp_from_name.value.trim()}));
+      smtp_port:f.smtp_port.value, smtp_from_name:f.smtp_from_name.value.trim(),
+      vault_enabled: f.vault_enabled.checked ? "1" : "0", vault_dir: f.vault_dir.value.trim(),
+      vault_domain: f.vault_domain.value.trim().toLowerCase(), https_enabled: f.https_enabled.checked ? "1" : "0",
+      https_port: f.https_port.value, tls_names: f.tls_names.value.trim().replace(/\s+/g, " ")}));
     toast("Ajustes guardados");
     loadSettings();
   } catch(e) { $("#e-settings").textContent = e.message; }
 });
+$("#b-vaultdir").onclick = () => openPicker($("#f-settings").vault_dir.value || "/data", p => { $("#f-settings").vault_dir.value = p; });
+$("#b-tlsrenew").onclick = async () => {
+  try { await api("POST", "/api/admin/tls", form({what:"cert"})); toast("Certificado emitido de nuevo"); loadSettings(); }
+  catch(e) { toast(e.message); }
+};
+$("#b-tlsca").onclick = async () => {
+  if (!confirm("Se creará una autoridad de certificación nueva. Tendrás que volver a instalar el certificado en TODOS los móviles y " +
+               "ordenadores que usen las apps de Bitwarden. ¿Seguir?")) return;
+  try { await api("POST", "/api/admin/tls", form({what:"ca"})); toast("CA nueva creada: reinstala el certificado en tus dispositivos"); loadSettings(); }
+  catch(e) { toast(e.message); }
+};
+
 $("#b-testmail").onclick = async () => {
   const to = $("#i-testmail").value.trim(), m = $("#m-testmail");
   if (!to) return toast("Escribe un correo para la prueba");
@@ -1116,6 +1305,268 @@ $("#b-testmail").onclick = async () => {
     await api("POST", "/api/admin/mail/test", form({to}));
     m.className = "okmsg"; m.textContent = "Enviado. Revisa la bandeja de entrada (y spam) de " + to + ".";
   } catch(e) { m.className = "err"; m.textContent = e.message; }
+};
+
+/* ---------- Contraseñas ---------- */
+let PW = {items:[], folders:[], info:null, cur:null};
+const PW_ICON = {1:"🔑", 2:"📝", 3:"💳", 4:"🪪", 5:"🗝️"};
+async function loadPw(keep){
+  let d, info;
+  try {
+    [d, info] = await Promise.all([api("GET", "/api/pw/items"), api("GET", "/api/pw/info")]);
+    PW.items = d.items; PW.folders = d.folders.sort((a,b)=>(a.name||"").localeCompare(b.name||"")); PW.info = info;
+  } catch(e) { $("#pwlist").textContent = ""; $("#pwlist").append(el("div", {class:"empty"}, e.message)); return; }
+  const sel = $("#pw-filter"), prev = sel.value;
+  sel.textContent = "";
+  sel.append(el("option", {value:"all"}, "Todos"), el("option", {value:"fav"}, "★ Favoritos"));
+  for (const t of [[1,"Inicios de sesión"],[2,"Notas"],[3,"Tarjetas"]]) sel.append(el("option", {value:"t"+t[0]}, t[1]));
+  for (const f of PW.folders) sel.append(el("option", {value:"f"+f.id}, "📁 " + f.name));
+  sel.append(el("option", {value:"nofolder"}, "Sin carpeta"), el("option", {value:"trash"}, "🗑 Papelera"));
+  sel.value = [...sel.options].some(o => o.value === prev) ? prev : "all";
+  const fs = $("#f-pw").folder; fs.textContent = "";
+  fs.append(el("option", {value:""}, "Sin carpeta"));
+  for (const f of PW.folders) fs.append(el("option", {value:f.id}, f.name));
+  $("#pw-urls").textContent = "";
+  for (const u of info.server_urls) $("#pw-urls").append(el("code", {}, u));
+  if (!info.https) $("#pw-urls").append(el("span", {class:"hint"}, "HTTPS está desactivado: pídeselo al administrador."));
+  $("#pw-email").textContent = info.email;
+  $("#pw-fp").textContent = info.ca_fingerprint;
+  renderPw();
+  const cur = keep && PW.items.find(i => i.id === keep);
+  editPw(cur || null);
+}
+function pwMatch(i){
+  const f = $("#pw-filter").value, q = $("#pw-q").value.trim().toLowerCase();
+  if (f === "trash" ? !i.deleted : i.deleted) return false;
+  if (f === "fav" && !i.favorite) return false;
+  if (f.startsWith("t") && String(i.type) !== f.slice(1)) return false;
+  if (f.startsWith("f") && i.folderId !== f.slice(1)) return false;
+  if (f === "nofolder" && i.folderId) return false;
+  if (!q) return true;
+  const hay = [i.name, i.notes, i.login && i.login.username, ...(i.login ? i.login.uris : [])].filter(Boolean).join(" ").toLowerCase();
+  return hay.includes(q);
+}
+function renderPw(){
+  const l = $("#pwlist"); l.textContent = "";
+  const list = PW.items.filter(pwMatch).sort((a,b)=> (b.favorite - a.favorite) || (a.name||"").localeCompare(b.name||"", undefined, {sensitivity:"base"}));
+  if (!list.length) {
+    l.append(el("div", {class:"empty"}, PW.items.length ? "Nada que mostrar con este filtro." :
+      "Aún no tienes contraseñas. Pulsa «Nuevo» o «Importar» (sirve el archivo .csv que exportas de Google, Chrome, Firefox o Bitwarden)."));
+    return;
+  }
+  for (const i of list){
+    const sub = i.type === 1 ? (i.login.username || (i.login.uris[0] || "")) : i.type === 3 ? (i.card.number ? "•••• " + i.card.number.slice(-4) : "") : "";
+    l.append(el("button", {class: PW.cur && PW.cur.id === i.id ? "on" : "", "data-id":i.id, onclick:()=>editPw(i)},
+      el("span", {class:"pi"}, PW_ICON[i.type] || "🔐"),
+      el("span", {class:"pt"}, el("div", {}, (i.favorite ? "★ " : "") + (i.name || "(sin nombre)")), el("div", {}, el("small", {}, sub)))));
+  }
+}
+$("#pw-q").oninput = renderPw;
+$("#pw-filter").onchange = renderPw;
+function pwType(t){
+  $("#pw-login").classList.toggle("hidden", t !== 1);
+  $("#pw-card").classList.toggle("hidden", t !== 3);
+}
+$("#f-pw").type.onchange = ev => pwType(+ev.target.value);
+function editPw(i){
+  PW.cur = i;
+  $$("#pwlist button").forEach(b => b.classList.toggle("on", !!i && b.dataset.id === i.id));
+  const f = $("#f-pw"); f.reset(); resetEyes(f); $("#e-pw").textContent = "";
+  $("#gen").classList.add("hidden");
+  const t = i ? i.type : 1;
+  const editable = !i || (i.type <= 3 && !i.broken);
+  $("#pw-title").textContent = i ? (i.deleted ? "En la papelera: " : "") + (i.name || "") : "Nuevo elemento";
+  f.type.value = String(t <= 3 ? t : 2); f.type.disabled = !!i;
+  pwType(t <= 3 ? t : 0);
+  if (i) {
+    f.name.value = i.name || ""; f.notes.value = i.notes || ""; f.favorite.checked = i.favorite;
+    f.folder.value = i.folderId || "";
+    if (i.login) { f.username.value = i.login.username || ""; f.password.value = i.login.password || "";
+      f.totp.value = i.login.totp || ""; f.uris.value = i.login.uris.join("\n"); }
+    if (i.card) for (const k of ["cardholderName","brand","number","expMonth","expYear","code"]) f[k].value = i.card[k] || "";
+  }
+  const ex = $("#pw-extra"); ex.textContent = "";
+  if (i && i.fields && i.fields.length) {
+    ex.append(el("div", {}, "Campos personalizados (edítalos en la app de Bitwarden):"));
+    for (const fl of i.fields) ex.append(el("div", {}, el("strong", {}, (fl.name || "") + ": "), fl.type === 1 ? "••••••" : (fl.value || "")));
+  }
+  if (i && i.identity) {
+    ex.append(el("div", {}, "Identidad: " + [i.identity.firstName, i.identity.lastName, i.identity.email, i.identity.phone].filter(Boolean).join(" · ")));
+  }
+  if (i && !editable) ex.append(el("div", {}, "Este tipo de elemento se edita en la app de Bitwarden."));
+  $$("input,select,textarea", f).forEach(x => { if (x.name !== "type") x.disabled = !editable || (i && i.deleted); });
+  $("#b-pwsave").classList.toggle("hidden", !editable || (i && i.deleted));
+  $("#b-pwrestore").classList.toggle("hidden", !(i && i.deleted));
+  const del = $("#b-pwdel");
+  del.classList.toggle("hidden", !i);
+  del.textContent = i && i.deleted ? "Borrar para siempre" : "Mover a la papelera";
+}
+$("#b-pwnew").onclick = () => {
+  if ($("#pw-filter").value === "trash") $("#pw-filter").value = "all";
+  renderPw(); editPw(null);
+  const ff = $("#pw-filter").value; if (ff.startsWith("f")) $("#f-pw").folder.value = ff.slice(1);
+  $("#f-pw").name.focus();
+};
+$("#f-pw").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target, i = PW.cur;
+  const data = {id: i ? i.id : "", type: f.type.value, name: f.name.value.trim(), notes: f.notes.value,
+    folder: f.folder.value, favorite: f.favorite.checked ? "1" : "0"};
+  if (f.type.value === "1") Object.assign(data, {username:f.username.value, password:f.password.value, totp:f.totp.value.trim(), uris:f.uris.value});
+  if (f.type.value === "3") for (const k of ["cardholderName","brand","number","expMonth","expYear","code"]) data[k] = f[k].value.trim();
+  try {
+    const r = await api("POST", "/api/pw/item", form(data));
+    toast("Guardado"); loadPw(r.id);
+  } catch(e) { $("#e-pw").textContent = e.message; }
+});
+$("#b-pwdel").onclick = async () => {
+  const i = PW.cur; if (!i) return;
+  const forever = i.deleted;
+  if (forever && !confirm("¿Borrar «" + i.name + "» para siempre? No se puede deshacer.")) return;
+  try { await api("POST", "/api/pw/item/delete", form({id:i.id, permanent: forever ? "1" : "0"}));
+        toast(forever ? "Borrado" : "Movido a la papelera"); loadPw(); }
+  catch(e) { toast(e.message); }
+};
+$("#b-pwrestore").onclick = async () => {
+  const i = PW.cur; if (!i) return;
+  try { await api("POST", "/api/pw/item/restore", form({id:i.id})); toast("Restaurado"); loadPw(i.id); }
+  catch(e) { toast(e.message); }
+};
+async function copyText(t){
+  if (!t) return;
+  try { await navigator.clipboard.writeText(t); }
+  catch(e) {
+    const ta = el("textarea", {style:"position:fixed;opacity:0"}); ta.value = t; document.body.append(ta);
+    ta.select(); try { document.execCommand("copy"); } catch(e2) {} ta.remove();
+  }
+  toast("Copiado");
+}
+$$("[data-copy]").forEach(b => b.onclick = () => copyText($("#f-pw")[b.dataset.copy].value));
+
+/* Generador */
+function genPass(){
+  const len = +$("#gen-range").value;
+  let set = "abcdefghijkmnopqrstuvwxyz";
+  if ($("#gen-up").checked) set += "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  if ($("#gen-num").checked) set += "23456789";
+  if ($("#gen-sym").checked) set += "!@#$%^&*-_=+?";
+  const out = [], buf = new Uint32Array(len * 2);
+  crypto.getRandomValues(buf);
+  const lim = Math.floor(0x100000000 / set.length) * set.length;
+  for (let k = 0; out.length < len; k++) {
+    if (k >= buf.length) { crypto.getRandomValues(buf); k = 0; }
+    if (buf[k] < lim) out.push(set[buf[k] % set.length]);
+  }
+  $("#gen-len").textContent = len; $("#gen-out").textContent = out.join("");
+}
+$("#b-gen").onclick = () => { $("#gen").classList.toggle("hidden"); genPass(); };
+for (const id of ["gen-range","gen-up","gen-num","gen-sym"]) $("#"+id).oninput = genPass;
+$("#gen-again").onclick = genPass;
+$("#gen-use").onclick = () => {
+  const f = $("#f-pw"); f.password.value = $("#gen-out").textContent;
+  if (f.password.type === "password") f.password.parentNode.querySelector(".eye").click();
+  $("#gen").classList.add("hidden");
+};
+
+/* Carpetas */
+$("#b-pwfolders").onclick = async () => {
+  const cur = $("#pw-filter").value.startsWith("f") ? PW.folders.find(x => "f" + x.id === $("#pw-filter").value) : null;
+  if (cur) {
+    const n = prompt("Nombre de la carpeta (déjalo vacío para BORRARLA; sus elementos quedan sin carpeta):", cur.name);
+    if (n === null) return;
+    try {
+      if (n.trim()) await api("POST", "/api/pw/folder", form({id:cur.id, name:n.trim()}));
+      else { if (!confirm("¿Borrar la carpeta «" + cur.name + "»?")) return; await api("POST", "/api/pw/folder/delete", form({id:cur.id})); $("#pw-filter").value = "all"; }
+      loadPw();
+    } catch(e) { toast(e.message); }
+    return;
+  }
+  const n = prompt("Nombre de la carpeta nueva:\n(Para renombrar o borrar una carpeta, elígela antes en el filtro.)");
+  if (!n || !n.trim()) return;
+  try { await api("POST", "/api/pw/folder", form({name:n.trim()})); toast("Carpeta creada"); loadPw(); }
+  catch(e) { toast(e.message); }
+};
+
+/* Conectar apps */
+$("#b-pwapps").onclick = () => $("#pw-apps").classList.toggle("hidden");
+$("#b-pwapps-close").onclick = () => $("#pw-apps").classList.add("hidden");
+
+/* Importar CSV (Google, Chrome, Edge, Firefox, Bitwarden, 1Password, LastPass…) */
+function parseCsv(text){
+  const rows = []; let row = [], f = "", q = false;
+  text = text.replace(/^\uFEFF/, "");
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i+1] === '"') { f += '"'; i++; } else q = false; }
+      else f += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { row.push(f); f = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i+1] === "\n") i++;
+      row.push(f); f = ""; if (row.length > 1 || row[0] !== "") rows.push(row); row = [];
+    } else f += c;
+  }
+  row.push(f); if (row.length > 1 || row[0] !== "") rows.push(row);
+  return rows;
+}
+function csvToItems(text){
+  const rows = parseCsv(text);
+  if (rows.length < 2) return [];
+  const h = rows[0].map(x => x.trim().toLowerCase());
+  const col = (...names) => { for (const n of names) { const k = h.indexOf(n); if (k >= 0) return k; } return -1; };
+  const c = {
+    name: col("name","title","login_name"), url: col("url","login_uri","website","web site","uri"),
+    user: col("username","login_username","user name","email","login"), pass: col("password","login_password"),
+    notes: col("note","notes","extra","comments"), totp: col("login_totp","totp","otpauth","one-time password"),
+    folder: col("folder","grouping","group"), fav: col("favorite","fav"), type: col("type")
+  };
+  if (c.pass < 0 && c.notes < 0) return null;
+  const items = [];
+  for (const r of rows.slice(1)){
+    const g = k => (c[k] >= 0 && r[c[k]] != null) ? r[c[k]] : "";
+    const type = g("type") === "note" ? "note" : "login";
+    let url = g("url");
+    if (c.url >= 0 && h[c.url] === "login_uri") url = url.split(",").map(s => s.trim()).filter(Boolean).join("\n");
+    let name = g("name");
+    if (!name && url) { try { name = new URL(url.split("\n")[0]).hostname.replace(/^www\./, ""); } catch(e) { name = url; } }
+    if (!name && !g("pass") && !g("user")) continue;
+    items.push({type, name: name || "(sin nombre)", url, username: g("user"), password: g("pass"), notes: g("notes"),
+                totp: g("totp"), folder: g("folder"), favorite: g("fav") === "1" || g("fav").toLowerCase() === "true"});
+  }
+  return items;
+}
+$("#b-pwimport").onclick = () => $("#i-pwimport").click();
+$("#i-pwimport").onchange = async ev => {
+  const file = ev.target.files[0]; ev.target.value = "";
+  if (!file) return;
+  const items = csvToItems(await file.text());
+  if (!items) return toast("No reconozco este archivo: necesita al menos una columna «password» o «notes».");
+  if (!items.length) return toast("El archivo no tiene contraseñas.");
+  if (!confirm("Se van a importar " + items.length + " elemento(s) de «" + file.name + "». ¿Seguir?")) return;
+  try {
+    const r = await api("POST", "/api/pw/import", form({items: JSON.stringify(items)}));
+    toast(r.imported + " importado(s)" + (r.skipped ? ", " + r.skipped + " omitido(s)" : "") +
+          ". Ya puedes borrar el archivo .csv: tiene tus contraseñas sin cifrar.");
+    loadPw();
+  } catch(e) { toast(e.message); }
+};
+
+/* Exportar CSV (formato de Bitwarden) */
+$("#b-pwexport").onclick = async () => {
+  const pass = prompt("El archivo tendrá tus contraseñas SIN CIFRAR. Escribe tu contraseña para confirmar:");
+  if (!pass) return;
+  try {
+    const r = await fetch("/api/pw/export", {method:"POST", credentials:"same-origin",
+      headers:{"X-PS5Share":"1", "Content-Type":"application/x-www-form-urlencoded"}, body: form({pass})});
+    if (!r.ok) { let m = "Error " + r.status; try { m = (await r.json()).error; } catch(e) {} throw new Error(m); }
+    const blob = await r.blob();
+    const name = (/filename="([^"]+)"/.exec(r.headers.get("Content-Disposition") || "") || [, "contrasenas.csv"])[1];
+    const a = el("a", {href: URL.createObjectURL(blob), download: name});
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast("Exportado. Guárdalo en un sitio seguro y bórralo cuando acabes.");
+  } catch(e) { toast(e.message); }
 };
 
 boot();

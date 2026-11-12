@@ -12,3 +12,7 @@ WOLF_SRC := $(addprefix $(WOLF_DIR)/wolfssl/wolfcrypt/src/,$(WOLFCRYPT_SRC)) \
             $(addprefix $(WOLF_DIR)/wolfssh/src/,$(WOLFSSH_SRC))
 WOLF_CFLAGS := -DWOLFSSL_USER_SETTINGS -I$(WOLF_DIR) -I$(WOLF_DIR)/wolfssl \
                -I$(WOLF_DIR)/wolfssh -Wno-error
+
+# cJSON (MIT): JSON de la API compatible con Bitwarden
+CJSON_SRC := $(WOLF_DIR)/cjson/cJSON.c
+WOLF_SRC += $(CJSON_SRC)

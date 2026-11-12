@@ -346,6 +346,10 @@ defaults(settings_t *s) {
   snprintf(s->smtp_from_name, sizeof(s->smtp_from_name), "PS5NAS");
   s->recover_email = 1;
   s->recover_admin = 1;
+  s->vault_enabled = 1;
+  snprintf(s->vault_domain, sizeof(s->vault_domain), "ps5nas.local");
+  s->https_enabled = 1;
+  s->https_port = 8443;
 }
 
 
@@ -400,6 +404,21 @@ load_file(const char *path) {
         snprintf(g_settings.smtp_from_name, sizeof(g_settings.smtp_from_name), "%s", v);
       else if(!strcmp(k, "recover_email")) g_settings.recover_email = atoi(v);
       else if(!strcmp(k, "recover_admin")) g_settings.recover_admin = atoi(v);
+      else if(!strcmp(k, "vault_enabled")) g_settings.vault_enabled = atoi(v);
+      else if(!strcmp(k, "vault_dir")) {
+        if(!v[0] || valid_realpath(v))
+          snprintf(g_settings.vault_dir, sizeof(g_settings.vault_dir), "%s", v);
+      }
+      else if(!strcmp(k, "vault_domain")) {
+        if(cfg_valid_hostname_list(v) && !strchr(v, ' ') && v[0])
+          snprintf(g_settings.vault_domain, sizeof(g_settings.vault_domain), "%s", v);
+      }
+      else if(!strcmp(k, "https_enabled")) g_settings.https_enabled = atoi(v);
+      else if(!strcmp(k, "https_port")) g_settings.https_port = atoi(v);
+      else if(!strcmp(k, "tls_names")) {
+        if(cfg_valid_hostname_list(v))
+          snprintf(g_settings.tls_names, sizeof(g_settings.tls_names), "%s", v);
+      }
     } else if(!strcmp(fld[0], "user") && n >= 6) {
       if(g_nusers >= CFG_MAX_USERS || !cfg_valid_username(fld[1])) continue;
       if(cfg_find_user_locked(fld[1])) continue;
@@ -421,6 +440,9 @@ load_file(const char *path) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(u && strlen(fld[2]) < sizeof(u->pwenc))
         snprintf(u->pwenc, sizeof(u->pwenc), "%s", fld[2]);
+    } else if(!strcmp(fld[0], "vault") && n >= 2) {
+      user_t *u = cfg_find_user_locked(fld[1]);
+      if(u) u->vault = 1;
     } else if(!strcmp(fld[0], "email") && n >= 3) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(u && cfg_valid_email(fld[2])) snprintf(u->email, sizeof(u->email), "%s", fld[2]);
@@ -469,6 +491,12 @@ cfg_save_locked(void) {
   fprintf(f, "set\tsmtp_from_name\t%s\n", g_settings.smtp_from_name);
   fprintf(f, "set\trecover_email\t%d\n", g_settings.recover_email);
   fprintf(f, "set\trecover_admin\t%d\n", g_settings.recover_admin);
+  fprintf(f, "set\tvault_enabled\t%d\n", g_settings.vault_enabled);
+  fprintf(f, "set\tvault_dir\t%s\n", g_settings.vault_dir);
+  fprintf(f, "set\tvault_domain\t%s\n", g_settings.vault_domain);
+  fprintf(f, "set\thttps_enabled\t%d\n", g_settings.https_enabled);
+  fprintf(f, "set\thttps_port\t%u\n", g_settings.https_port);
+  fprintf(f, "set\ttls_names\t%s\n", g_settings.tls_names);
 
   for(int i=0; i<g_nusers; i++) {
     user_t *u = &g_users[i];
@@ -482,6 +510,7 @@ cfg_save_locked(void) {
     if(u->kwrap[0]) fprintf(f, "ukey\t%s\t%s\t%s\n", u->name, u->ksalt, u->kwrap);
     if(u->pwenc[0]) fprintf(f, "pw\t%s\t%s\n", u->name, u->pwenc);
     if(u->email[0]) fprintf(f, "email\t%s\t%s\n", u->name, u->email);
+    if(u->vault) fprintf(f, "vault\t%s\n", u->name);
   }
 
   if(fflush(f) || fsync(fileno(f))) {
@@ -1055,7 +1084,9 @@ int
 cfg_update_settings(const settings_t *s, char *err, size_t errlen) {
   int r = -1;
   if(!s->ftp_port || !s->http_port || !s->sftp_port || s->ftp_port == s->http_port ||
-     s->sftp_port == s->http_port || s->sftp_port == s->ftp_port) {
+     s->sftp_port == s->http_port || s->sftp_port == s->ftp_port || !s->https_port ||
+     s->https_port == s->http_port || s->https_port == s->sftp_port ||
+     s->https_port == s->ftp_port) {
     snprintf(err, errlen, "Puertos no válidos o repetidos");
     return -1;
   }
@@ -1073,6 +1104,19 @@ cfg_update_settings(const settings_t *s, char *err, size_t errlen) {
      strchr(s->smtp_from_name, '\t') || strchr(s->smtp_from_name, '\n') ||
      strchr(s->smtp_from_name, '\r')) {
     snprintf(err, errlen, "Ajustes de correo no válidos");
+    return -1;
+  }
+  if(s->vault_dir[0] && !valid_realpath(s->vault_dir)) {
+    snprintf(err, errlen, "Carpeta del gestor no válida (ruta absoluta, sin '..')");
+    return -1;
+  }
+  if(!s->vault_domain[0] || strchr(s->vault_domain, ' ') ||
+     !cfg_valid_hostname_list(s->vault_domain) || !strchr(s->vault_domain, '.')) {
+    snprintf(err, errlen, "Dominio del gestor no válido (p. ej. ps5nas.local)");
+    return -1;
+  }
+  if(!cfg_valid_hostname_list(s->tls_names)) {
+    snprintf(err, errlen, "Nombres del certificado no válidos (separados por espacios)");
     return -1;
   }
   if(s->smtp_user[0] && !cfg_valid_email(s->smtp_user)) {
@@ -1098,4 +1142,40 @@ cfg_unlock_key_stored(const char *name, struct ukey *key) {
   if(cfg_get_password(name, pass, sizeof(pass))) return;
   cfg_unlock_key(name, pass, key);
   memset(pass, 0, sizeof(pass));
+}
+
+
+int
+cfg_seal(const char *aad, const void *plain, size_t len, char *out_hex, size_t outlen) {
+  if(!g_master_ok) return -1;
+  return crypt_seal(g_master, aad, plain, len, out_hex, outlen);
+}
+
+
+int
+cfg_unseal(const char *aad, const char *hex, void *out, size_t outlen) {
+  if(!g_master_ok) return -1;
+  return crypt_open(g_master, aad, hex, out, outlen);
+}
+
+
+void
+cfg_vault_dir(char *out, size_t outlen) {
+  cfg_lock();
+  if(g_settings.vault_dir[0]) snprintf(out, outlen, "%s", g_settings.vault_dir);
+  else snprintf(out, outlen, "%s/vault", g_dir);
+  cfg_unlock();
+}
+
+
+/* Lista de nombres de equipo o IPv4 separados por espacios (puede ser vacía). */
+int
+cfg_valid_hostname_list(const char *s) {
+  if(strlen(s) > 255) return 0;
+  for(const char *p = s; *p; p++) {
+    char c = *p;
+    if(!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+         c == '.' || c == '-' || c == ' ')) return 0;
+  }
+  return 1;
 }

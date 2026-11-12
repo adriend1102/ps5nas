@@ -4,12 +4,12 @@
 
 # PS5NAS
 
-**Convierte tu PS5 con jailbreak en un NAS multiusuario: SFTP, web y carpetas privadas cifradas, sin ningún PC encendido.**
+**Convierte tu PS5 con jailbreak en un NAS multiusuario: SFTP, web, carpetas privadas cifradas y gestor de contraseñas compatible con Bitwarden, sin ningún PC encendido.**
 
-![Versión](https://img.shields.io/badge/versión-0.5.0-2156d6)
+![Versión](https://img.shields.io/badge/versión-0.6.0-2156d6)
 ![Plataforma](https://img.shields.io/badge/PS5-firmware%2013.x-0b0d12?logo=playstation)
 ![Licencia](https://img.shields.io/badge/licencia-GPLv3-1f8a4c)
-![Pruebas](https://img.shields.io/badge/pruebas-192%20OK-1f8a4c)
+![Pruebas](https://img.shields.io/badge/pruebas-238%20OK-1f8a4c)
 
 </div>
 
@@ -23,6 +23,8 @@
 | 🔐 **SFTP** | Conexión cifrada (wolfSSH) desde *Mis archivos* de Samsung, WinSCP, FileZilla, Cyberduck… |
 | 🌐 **Panel web** | Gestiona usuarios, carpetas y ajustes. Explorador con visor de fotos, vídeo, música, PDF y editor de texto. |
 | 🔒 **Carpetas privadas cifradas** | Nombres y contenido cifrados en el disco (AES‑256‑GCM). El usuario no configura nada. |
+| 🗝️ **Gestor de contraseñas** | Tu propio «Bitwarden» en la PS5: pestaña *Contraseñas* en la web y apps oficiales de Bitwarden (móvil con autorrelleno, extensión de navegador, escritorio). Importa el CSV de Google/Chrome/Firefox. |
+| 🔏 **HTTPS propio** | La PS5 crea su certificado (IP de casa y de Tailscale); lo instalas una vez en cada dispositivo. |
 | 🔑 **Recuperar contraseñas** | Por correo (Gmail/SMTP con TLS) o pidiéndosela al administrador, que la acepta desde el panel. |
 | 📱 **Recordar sesión** | Entra directo desde la consola o el móvil durante 180 días. |
 | 🛰️ **Fuera de casa** | Funciona con [Tailscale para PS5](https://github.com/holdmysocks/ps5-tailscale): la consola es el servidor y la VPN. |
@@ -45,12 +47,13 @@
 3. Abre **PS5NAS** desde la pantalla de inicio: arranca el servidor y abre el panel.
 4. Crea el administrador y los usuarios en `http://IP-DE-TU-PS5:8000`.
 5. Conéctate por SFTP a `IP-DE-TU-PS5`, puerto `2222`, con tu usuario.
+6. Contraseñas: pestaña **Contraseñas → Conectar apps** (servidor autoalojado `https://IP-DE-TU-PS5:8443`).
 
 ¿Prefieres sin app? Envía `ps5share.elf` al puerto 9021.
 
 ## 📖 Documentación
 
-Toda la guía (Tailscale, correo de recuperación, carpetas cifradas, seguridad, compilación y formato de configuración) está en **[docs/GUIA.md](docs/GUIA.md)**.
+Toda la guía (gestor de contraseñas y Bitwarden, Tailscale, correo de recuperación, carpetas cifradas, seguridad, compilación y formato de configuración) está en **[docs/GUIA.md](docs/GUIA.md)**.
 
 ## 🛠️ Compilar
 
@@ -63,8 +66,9 @@ sh test/run_tests.sh        # pruebas en Linux
 
 ## 🙏 Créditos
 
+El gestor de contraseñas es compatible con los clientes de [Bitwarden](https://bitwarden.com) (marca de Bitwarden Inc., sin relación con este proyecto); los formatos de la API se comprobaron con [Vaultwarden](https://github.com/dani-garcia/vaultwarden).
 Basado en [ftpsrv](https://github.com/ps5-payload-dev/ftpsrv) de John Törnblom. Usa
-[wolfSSL](https://github.com/wolfSSL/wolfssl) y [wolfSSH](https://github.com/wolfSSL/wolfssh),
+[wolfSSL](https://github.com/wolfSSL/wolfssl), [wolfSSH](https://github.com/wolfSSL/wolfssh) y [cJSON](https://github.com/DaveGamble/cJSON),
 y la plantilla [ps5-native-app-boilerplate](https://github.com/drakmor/ps5-native-app-boilerplate).
 
 Licencia **GPLv3** — ver [LICENSE](LICENSE).

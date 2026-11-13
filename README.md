@@ -6,7 +6,7 @@
 
 **Convierte tu PS5 con jailbreak en un NAS multiusuario: SFTP, web, carpetas privadas cifradas y gestor de contraseñas compatible con Bitwarden, sin ningún PC encendido.**
 
-![Versión](https://img.shields.io/badge/versión-0.6.0-2156d6)
+![Versión](https://img.shields.io/badge/versión-0.7.0-2156d6)
 ![Plataforma](https://img.shields.io/badge/PS5-firmware%2013.x-0b0d12?logo=playstation)
 ![Licencia](https://img.shields.io/badge/licencia-GPLv3-1f8a4c)
 ![Pruebas](https://img.shields.io/badge/pruebas-238%20OK-1f8a4c)

@@ -1567,6 +1567,105 @@ h_admin_user_delete(req_t *r) {
 }
 
 
+/* ------------------------------------------------------------------ */
+/* Accesos directos a otras webs de la consola (pestaña «Apps»)        */
+/* ------------------------------------------------------------------ */
+
+static int
+h_links(req_t *r) {
+  link_t *ls = calloc(CFG_MAX_LINKS, sizeof(link_t));
+  if(!ls) return send_err(r, 500, "Sin memoria");
+  int n = cfg_links(ls, CFG_MAX_LINKS, &r->user);
+  sb_t b = {0};
+  sb_puts(&b, "{\"links\":[");
+  for(int i=0; i<n; i++) {
+    if(i) sb_puts(&b, ",");
+    sb_puts(&b, "{\"id\":");
+    sb_json_str(&b, ls[i].id);
+    sb_puts(&b, ",\"name\":");
+    sb_json_str(&b, ls[i].name);
+    sb_puts(&b, ",\"target\":");
+    sb_json_str(&b, ls[i].target);
+    if(r->user.admin) {
+      /* Solo el administrador ve a quién se muestra cada acceso. */
+      sb_printf(&b, ",\"all\":%s,\"users\":[", ls[i].all ? "true" : "false");
+      for(int j=0; j<ls[i].nusers; j++) {
+        if(j) sb_puts(&b, ",");
+        sb_json_str(&b, ls[i].users[j]);
+      }
+      sb_puts(&b, "]");
+    }
+    sb_puts(&b, "}");
+  }
+  sb_puts(&b, "]}");
+  free(ls);
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_admin_link(req_t *r) {
+  char tmp[16], err[256];
+  char *users = malloc(CFG_MAX_USERS * (CFG_NAME_MAX + 2) + 1);
+  link_t *l = calloc(1, sizeof(*l));
+  int ret;
+  if(!users || !l) {
+    free(users);
+    free(l);
+    return send_err(r, 500, "Sin memoria");
+  }
+  if(read_body(r)) {
+    ret = send_err(r, 400, "Petición no válida");
+    goto out;
+  }
+  get_param(r->body, "id", l->id, sizeof(l->id));
+  if(get_param(r->body, "name", l->name, sizeof(l->name)) ||
+     get_param(r->body, "target", l->target, sizeof(l->target))) {
+    ret = send_err(r, 400, "Faltan el nombre o el destino (o son demasiado largos)");
+    goto out;
+  }
+  get_param(r->body, "all", tmp, sizeof(tmp));
+  l->all = !strcmp(tmp, "1");
+  users[0] = 0;
+  get_param(r->body, "users", users, CFG_MAX_USERS * (CFG_NAME_MAX + 2) + 1);
+  for(char *save = NULL, *t = strtok_r(users, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+    if(!*t) continue;
+    if(l->nusers >= CFG_MAX_USERS || strlen(t) > CFG_NAME_MAX) {
+      ret = send_err(r, 400, "Lista de usuarios no válida");
+      goto out;
+    }
+    int dup = 0;
+    for(int j=0; j<l->nusers; j++) dup |= !strcmp(l->users[j], t);
+    if(!dup) snprintf(l->users[l->nusers++], CFG_NAME_MAX + 1, "%s", t);
+  }
+  if(cfg_link_save(l, err, sizeof(err))) {
+    ret = send_err(r, 400, err);
+    goto out;
+  }
+  {
+    sb_t b = {0};
+    sb_puts(&b, "{\"ok\":true,\"id\":");
+    sb_json_str(&b, l->id);
+    sb_puts(&b, "}");
+    ret = send_json(r, 200, &b, NULL);
+  }
+ out:
+  free(users);
+  free(l);
+  return ret;
+}
+
+
+static int
+h_admin_link_delete(req_t *r) {
+  char id[32], err[256];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "id", id, sizeof(id));
+  if(cfg_link_delete(id, err, sizeof(err))) return send_err(r, 400, err);
+  return send_ok(r);
+}
+
+
 /* Muestra la contraseña de un usuario (ojo del panel de administración). */
 static int
 h_admin_user_password(req_t *r) {
@@ -1915,6 +2014,9 @@ static const route_t routes[] = {
   {"POST", "/api/admin/user",           h_admin_user_save,     2},
   {"POST", "/api/admin/user/delete",    h_admin_user_delete,   2},
   {"POST", "/api/admin/user/password",  h_admin_user_password, 2},
+  {"GET",  "/api/links",                h_links,               1},
+  {"POST", "/api/admin/link",           h_admin_link,          2},
+  {"POST", "/api/admin/link/delete",    h_admin_link_delete,   2},
   {"GET",  "/api/admin/requests",       h_admin_requests,      2},
   {"POST", "/api/admin/request",        h_admin_request_decide, 2},
   {"POST", "/api/admin/mail/test",      h_admin_mail_test,     2},

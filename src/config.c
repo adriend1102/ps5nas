@@ -28,6 +28,8 @@ static int        g_master_ok = 0;
 static settings_t g_settings;
 static user_t     g_users[CFG_MAX_USERS];
 static int        g_nusers = 0;
+static link_t     g_links[CFG_MAX_LINKS];
+static int        g_nlinks = 0;
 
 
 const char *cfg_dir(void) { return g_dir; }
@@ -446,6 +448,21 @@ load_file(const char *path) {
     } else if(!strcmp(fld[0], "email") && n >= 3) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(u && cfg_valid_email(fld[2])) snprintf(u->email, sizeof(u->email), "%s", fld[2]);
+    } else if(!strcmp(fld[0], "link") && n >= 5) {
+      if(g_nlinks >= CFG_MAX_LINKS || strlen(fld[1]) != 16 || strlen(fld[3]) > CFG_LINK_NAME ||
+         strlen(fld[4]) > CFG_LINK_TARGET) continue;
+      link_t *l = &g_links[g_nlinks++];
+      memset(l, 0, sizeof(*l));
+      snprintf(l->id, sizeof(l->id), "%s", fld[1]);
+      l->all = atoi(fld[2]) != 0;
+      snprintf(l->name, sizeof(l->name), "%s", fld[3]);
+      snprintf(l->target, sizeof(l->target), "%s", fld[4]);
+    } else if(!strcmp(fld[0], "linkuser") && n >= 3) {
+      for(int i=0; i<g_nlinks; i++) {
+        link_t *l = &g_links[i];
+        if(strcmp(l->id, fld[1]) || l->nusers >= CFG_MAX_USERS || !cfg_valid_username(fld[2])) continue;
+        snprintf(l->users[l->nusers++], CFG_NAME_MAX + 1, "%s", fld[2]);
+      }
     } else if(!strcmp(fld[0], "mount") && n >= 5) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(!u || u->nmounts >= CFG_MAX_MOUNTS) continue;
@@ -511,6 +528,11 @@ cfg_save_locked(void) {
     if(u->pwenc[0]) fprintf(f, "pw\t%s\t%s\n", u->name, u->pwenc);
     if(u->email[0]) fprintf(f, "email\t%s\t%s\n", u->name, u->email);
     if(u->vault) fprintf(f, "vault\t%s\n", u->name);
+  }
+  for(int i=0; i<g_nlinks; i++) {
+    link_t *l = &g_links[i];
+    fprintf(f, "link\t%s\t%d\t%s\t%s\n", l->id, l->all, l->name, l->target);
+    for(int j=0; j<l->nusers; j++) fprintf(f, "linkuser\t%s\t%s\n", l->id, l->users[j]);
   }
 
   if(fflush(f) || fsync(fileno(f))) {
@@ -1064,6 +1086,15 @@ cfg_delete_user(const char *name, char *err, size_t errlen) {
       snprintf(err, errlen, "No puedes borrar el último administrador");
       goto out;
     }
+    for(int k=0; k<g_nlinks; k++) {
+      link_t *l = &g_links[k];
+      for(int j=0; j<l->nusers; j++) {
+        if(strcmp(l->users[j], name)) continue;
+        memmove(l->users[j], l->users[j+1], (size_t)(l->nusers - j - 1) * sizeof(l->users[0]));
+        l->nusers--;
+        break;
+      }
+    }
     memmove(&g_users[i], &g_users[i+1], sizeof(user_t) * (g_nusers - i - 1));
     g_nusers--;
     if(cfg_save_locked()) {
@@ -1178,4 +1209,121 @@ cfg_valid_hostname_list(const char *s) {
          c == '.' || c == '-' || c == ' ')) return 0;
   }
   return 1;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Accesos directos a otras webs de la consola                         */
+/* ------------------------------------------------------------------ */
+
+static int
+link_visible(const link_t *l, const user_t *u) {
+  if(!u || u->admin || l->all) return 1;
+  for(int j=0; j<l->nusers; j++) if(!strcmp(l->users[j], u->name)) return 1;
+  return 0;
+}
+
+
+int
+cfg_links(link_t *out, int max, const user_t *user) {
+  int n = 0;
+  cfg_lock();
+  for(int i=0; i<g_nlinks && n < max; i++) {
+    if(link_visible(&g_links[i], user)) memcpy(&out[n++], &g_links[i], sizeof(link_t));
+  }
+  cfg_unlock();
+  return n;
+}
+
+
+static int
+valid_link_text(const char *s, size_t max) {
+  size_t n = strlen(s);
+  if(!n || n > max) return 0;
+  for(size_t i=0; i<n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    if(c < 0x20 || c == 0x7f) return 0;
+  }
+  return 1;
+}
+
+
+/* Destino: un puerto (con ruta opcional) o una URL http(s). */
+static int
+valid_link_target(const char *t) {
+  if(!valid_link_text(t, CFG_LINK_TARGET)) return 0;
+  for(const char *p = t; *p; p++) {
+    if(*p == ' ' || *p == '"' || *p == '\'' || *p == '<' || *p == '>' || *p == '\\' || *p == '`')
+      return 0;
+  }
+  if(!strncmp(t, "http://", 7) || !strncmp(t, "https://", 8)) return 1;
+  long port = 0;
+  const char *p = t;
+  while(*p >= '0' && *p <= '9' && port < 100000) port = port * 10 + (*p++ - '0');
+  if(p == t || port < 1 || port > 65535) return 0;
+  return *p == 0 || *p == '/';
+}
+
+
+int
+cfg_link_save(link_t *in, char *err, size_t errlen) {
+  int r = -1;
+  /* Se admite ":8080" escrito con dos puntos delante. */
+  if(in->target[0] == ':') memmove(in->target, in->target + 1, strlen(in->target));
+  if(!valid_link_text(in->name, CFG_LINK_NAME)) {
+    snprintf(err, errlen, "Pon un nombre (máx. %d caracteres)", CFG_LINK_NAME);
+    return -1;
+  }
+  if(!valid_link_target(in->target)) {
+    snprintf(err, errlen, "Destino no válido: pon un puerto (p. ej. 7860 o 8090/ruta) "
+             "o una dirección http(s)://...");
+    return -1;
+  }
+  cfg_lock();
+  for(int j=0; j<in->nusers; j++) {
+    if(!cfg_find_user_locked(in->users[j])) {
+      snprintf(err, errlen, "No existe el usuario %s", in->users[j]);
+      goto out;
+    }
+  }
+  link_t *l = NULL;
+  if(in->id[0]) {
+    for(int i=0; i<g_nlinks; i++) if(!strcmp(g_links[i].id, in->id)) l = &g_links[i];
+    if(!l) {
+      snprintf(err, errlen, "Ese acceso ya no existe");
+      goto out;
+    }
+  } else {
+    if(g_nlinks >= CFG_MAX_LINKS) {
+      snprintf(err, errlen, "Demasiados accesos (máx. %d)", CFG_MAX_LINKS);
+      goto out;
+    }
+    cfg_random_hex(in->id, 8);
+    l = &g_links[g_nlinks++];
+  }
+  memcpy(l, in, sizeof(*l));
+  if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+  else r = 0;
+ out:
+  cfg_unlock();
+  return r;
+}
+
+
+int
+cfg_link_delete(const char *id, char *err, size_t errlen) {
+  int r = -1;
+  cfg_lock();
+  for(int i=0; i<g_nlinks; i++) {
+    if(strcmp(g_links[i].id, id)) continue;
+    memmove(&g_links[i], &g_links[i+1], sizeof(link_t) * (size_t)(g_nlinks - i - 1));
+    g_nlinks--;
+    if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+    else r = 0;
+    goto out;
+  }
+  snprintf(err, errlen, "Ese acceso ya no existe");
+ out:
+  cfg_unlock();
+  return r;
 }

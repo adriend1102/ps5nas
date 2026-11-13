@@ -26,6 +26,7 @@
 | 🗝️ **Gestor de contraseñas** | Tu propio «Bitwarden» en la PS5: pestaña *Contraseñas* en la web y apps oficiales de Bitwarden (móvil con autorrelleno, extensión de navegador, escritorio). Importa el CSV de Google/Chrome/Firefox. |
 | 🔏 **HTTPS propio** | La PS5 crea su certificado (IP de casa y de Tailscale); lo instalas una vez en cada dispositivo. |
 | 🔑 **Recuperar contraseñas** | Por correo (Gmail/SMTP con TLS) o pidiéndosela al administrador, que la acepta desde el panel. |
+| 🧩 **Apps** | Pestaña con accesos directos a las otras webs de la consola (Machete IA, Tailscale…). El admin decide quién ve cada una. |
 | 📱 **Recordar sesión** | Entra directo desde la consola o el móvil durante 180 días. |
 | 🛰️ **Fuera de casa** | Funciona con [Tailscale para PS5](https://github.com/holdmysocks/ps5-tailscale): la consola es el servidor y la VPN. |
 | 🎮 **App en la pantalla de inicio** | Arranca el servidor, muestra las direcciones (también la IP de Tailscale) y abre el panel. |

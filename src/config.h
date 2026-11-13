@@ -80,6 +80,27 @@ typedef struct settings {
 } settings_t;
 
 
+/* Accesos directos a otras webs de la consola (pestaña «Apps»). */
+#define CFG_MAX_LINKS   32
+#define CFG_LINK_NAME   60
+#define CFG_LINK_TARGET 255
+
+typedef struct link {
+  char id[17];                         /* identificador aleatorio */
+  char name[CFG_LINK_NAME+1];          /* nombre que se ve */
+  char target[CFG_LINK_TARGET+1];      /* "8080", "8080/ruta" o "http(s)://..." */
+  int  all;                            /* la ven todos los usuarios */
+  int  nusers;                         /* si no, solo estos */
+  char users[CFG_MAX_USERS][CFG_NAME_MAX+1];
+} link_t;
+
+/* Copia los accesos (todos, o solo los que ve USER si no es NULL). */
+int  cfg_links(link_t *out, int max, const user_t *user);
+/* Crea (id vacío) o actualiza un acceso; devuelve 0 y deja el id en IN. */
+int  cfg_link_save(link_t *in, char *err, size_t errlen);
+int  cfg_link_delete(const char *id, char *err, size_t errlen);
+
+
 /* Inicializa la configuración leyendo DIR/users.conf (lo crea si no existe). */
 int  cfg_init(const char *dir);
 

@@ -107,6 +107,19 @@ td.act{text-align:right;white-space:nowrap}
 .check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px}
 .hint{font-size:13px;color:var(--muted);margin-top:6px}
 .curpw{display:flex;gap:8px;align-items:center;background:var(--chip);border-radius:8px;padding:6px 6px 6px 12px}
+/* apps */
+.apps{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;padding:14px}
+.app{display:flex;flex-direction:column;gap:6px;padding:16px;border:1px solid var(--line);border-radius:12px;
+  background:var(--bg);text-decoration:none;color:var(--ink);min-height:96px}
+.app:hover{border-color:var(--accent)}
+.app .an{font-weight:600;font-size:16px;display:flex;align-items:center;gap:8px}
+.app .an i{width:34px;height:34px;border-radius:9px;background:var(--accent);color:var(--accent-ink);
+  display:grid;place-items:center;font-style:normal;font-weight:700;flex:none}
+.app small{color:var(--muted);word-break:break-all}
+.app .who2{font-size:12px;color:var(--muted)}
+.app .acts{display:flex;gap:6px;margin-top:auto}
+.uchecks{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px 12px;margin-top:6px}
+.uchecks label{display:flex;gap:6px;align-items:center;font-size:14px}
 .curpw .btn svg{width:16px;height:16px;vertical-align:-3px;display:inline-block}
 .curpw code{background:none;padding:0;font-size:15px;flex:1}
 h2{font-size:16px;margin:0 0 4px}
@@ -273,6 +286,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
     <nav>
       <button data-tab="files" class="on">Archivos</button>
       <button data-tab="pw" id="nav-pw" class="hidden">Contraseñas</button>
+      <button data-tab="apps" id="nav-apps">Apps</button>
       <button data-tab="users" class="adm">Usuarios<span class="badge hidden" id="reqbadge"></span></button>
       <button data-tab="settings" class="adm">Ajustes</button>
     </nav>
@@ -401,6 +415,37 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
           </div>
         </form>
       </div>
+    </section>
+
+    <!-- Apps: accesos directos a otras webs de la consola -->
+    <section id="t-apps" class="hidden">
+      <div class="card">
+        <div class="toolbar"><strong class="grow">Apps de la consola</strong>
+          <button class="btn sm primary adm" id="b-newlink">Añadir app</button></div>
+        <div class="apps" id="applist"></div>
+      </div>
+      <form class="card pad hidden" id="f-link" style="margin-top:16px;max-width:680px">
+        <h2 id="l-title">Añadir app</h2>
+        <div class="hint">Un acceso directo a otra web que corre en la PS5 (Machete IA, Tailscale, gestores…) o en tu red.</div>
+        <label class="f">Nombre</label>
+        <input type="text" name="name" maxlength="60" placeholder="p. ej. Machete IA" required>
+        <label class="f">Destino</label>
+        <input type="text" name="target" maxlength="255" placeholder="7860   ·   8090/ruta   ·   http://192.168.1.10:8096" required>
+        <div class="hint">Si pones solo un <strong>puerto</strong> (y una ruta opcional), se abre en la misma dirección con la que
+          se ha entrado a PS5NAS: funciona en casa, desde fuera por Tailscale y desde el navegador de la consola.</div>
+        <label class="check"><input type="checkbox" name="all"> La pueden ver <strong>todos</strong> los usuarios</label>
+        <div id="l-users-box">
+          <label class="f">O solo estos usuarios (los administradores las ven todas)</label>
+          <div class="uchecks" id="l-users"></div>
+        </div>
+        <div class="err" id="e-link"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn primary">Guardar</button>
+          <button type="button" class="btn" id="b-link-cancel">Cancelar</button>
+          <span class="grow"></span>
+          <button type="button" class="btn danger" id="b-link-del">Borrar</button>
+        </div>
+      </form>
     </section>
 
     <!-- Usuarios -->
@@ -814,6 +859,7 @@ function startApp(){
   const want = location.hash === "#pw" && ME.vault ? "pw" : "files";
   openTab(want);
   if (ME.admin) pollRequests();
+  refreshAppsTab();
 }
 
 $$("nav button").forEach(b => b.onclick = () => openTab(b.dataset.tab));
@@ -821,7 +867,8 @@ let TAB = "files";
 function openTab(t){
   TAB = t;
   $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
-  for (const s of ["files","pw","users","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
+  for (const s of ["files","pw","apps","users","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
+  if (t === "apps") loadLinks();
   if (t === "files") loadDir(CWD);
   if (t === "pw") loadPw();
   if (t === "users") { loadUsers(); pollRequests(); }
@@ -1059,6 +1106,86 @@ document.addEventListener("keydown", ev => {
   else if (VIEW && !VIEW.editing && ev.key === "ArrowRight" && !$("#v-next").classList.contains("hidden")) $("#v-next").click();
 });
 window.addEventListener("beforeunload", ev => { if (VIEW && VIEW.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
+
+/* ---------- Apps (accesos directos) ---------- */
+let LINKS = [], LEDIT = null;
+function linkUrl(t){
+  if (/^https?:\/\//i.test(t)) return t;
+  const m = t.match(/^:?(\d{1,5})(\/.*)?$/);
+  if (!m) return "#";
+  return location.protocol + "//" + location.hostname + ":" + m[1] + (m[2] || "/");
+}
+async function refreshAppsTab(){
+  try { LINKS = (await api("GET", "/api/links")).links; } catch(e) { LINKS = []; }
+  /* La pestaña se oculta a quien no tiene ninguna app (el admin la ve siempre). */
+  $("#nav-apps").classList.toggle("hidden", !ME.admin && !LINKS.length);
+}
+async function loadLinks(){
+  await refreshAppsTab();
+  const box = $("#applist"); box.textContent = "";
+  if (!LINKS.length) {
+    box.append(el("div", {class:"empty", style:"grid-column:1/-1"}, ME.admin
+      ? "Aún no hay apps. Añade las webs de la consola (por ejemplo Machete IA en el puerto 7860) y elige quién las ve."
+      : "No tienes ninguna app asignada."));
+  }
+  for (const l of LINKS){
+    const url = linkUrl(l.target);
+    const card = el("a", {class:"app", href:url, target:"_blank", rel:"noopener"},
+      el("span", {class:"an"}, el("i", {}, (l.name.trim()[0] || "?").toUpperCase()), l.name),
+      el("small", {}, url));
+    if (ME.admin) {
+      card.append(el("span", {class:"who2"}, l.all ? "👥 Todos los usuarios"
+        : (l.users.length ? "👤 " + l.users.join(", ") : "🔒 Solo administradores")));
+      const ed = el("button", {type:"button", class:"btn sm"}, "Editar");
+      ed.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); editLink(l); };
+      card.append(el("span", {class:"acts"}, ed));
+    }
+    box.append(card);
+  }
+  $$("#t-apps .adm").forEach(b => b.classList.toggle("hidden", !ME.admin));
+}
+async function editLink(l){
+  LEDIT = l;
+  try { USERS = (await api("GET", "/api/admin/users")).users; } catch(e) {}
+  const f = $("#f-link"); f.classList.remove("hidden");
+  $("#l-title").textContent = l ? "Editar " + l.name : "Añadir app";
+  f.name.value = l ? l.name : ""; f.target.value = l ? l.target : "";
+  f.all.checked = l ? l.all : false;
+  $("#b-link-del").classList.toggle("hidden", !l);
+  $("#e-link").textContent = "";
+  const box = $("#l-users"); box.textContent = "";
+  for (const u of USERS.filter(u => !u.admin)) {
+    const c = el("input", {type:"checkbox", value:u.name});
+    c.checked = !!(l && l.users.includes(u.name));
+    box.append(el("label", {}, c, u.name));
+  }
+  if (!box.children.length) box.append(el("span", {class:"hint"}, "No hay usuarios que no sean administradores."));
+  syncAll();
+  f.scrollIntoView({behavior:"smooth", block:"start"});
+  f.name.focus();
+}
+function syncAll(){ $("#l-users-box").style.opacity = $("#f-link").all.checked ? ".45" : "1";
+  $$("#l-users input").forEach(c => c.disabled = $("#f-link").all.checked); }
+$("#f-link").all.onchange = syncAll;
+$("#b-newlink").onclick = () => editLink(null);
+$("#b-link-cancel").onclick = () => { $("#f-link").classList.add("hidden"); LEDIT = null; };
+$("#f-link").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  const users = $$("#l-users input:checked").map(c => c.value).join(",");
+  try {
+    await api("POST", "/api/admin/link", form({id: LEDIT ? LEDIT.id : "", name:f.name.value.trim(),
+      target:f.target.value.trim(), all: f.all.checked ? "1" : "0", users}));
+    f.classList.add("hidden"); LEDIT = null;
+    toast("App guardada");
+    loadLinks();
+  } catch(e) { $("#e-link").textContent = e.message; }
+});
+$("#b-link-del").onclick = async () => {
+  if (!LEDIT || !confirm("¿Borrar el acceso «" + LEDIT.name + "»? La app en sí no se toca.")) return;
+  try { await api("POST", "/api/admin/link/delete", form({id:LEDIT.id})); $("#f-link").classList.add("hidden"); LEDIT = null; loadLinks(); }
+  catch(e) { $("#e-link").textContent = e.message; }
+};
 
 /* ---------- Solicitudes de recuperación ---------- */
 let REQ_TIMER = null;

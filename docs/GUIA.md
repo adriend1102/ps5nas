@@ -202,6 +202,24 @@ código…) se pueden **editar y guardar** (Ctrl+S), y **Nuevo archivo** crea un
 También puedes crear carpetas, renombrar, borrar, subir (o arrastrar) y
 descargar. Todo funciona igual en las carpetas privadas cifradas y por SFTP.
 
+## Apps: accesos a otras webs de la consola
+
+La pestaña **Apps** reúne accesos directos a las demás webs que tengas en la PS5
+(Machete IA en el 7860, Tailscale en el 8090, un gestor de descargas…) o en tu
+red. El administrador las añade con **Añadir app**:
+
+* **Destino:** un puerto, con ruta opcional (`7860`, `8090/ruta`), o una
+  dirección completa (`http://192.168.1.10:8096`). Con un puerto, la app se abre
+  en la misma dirección con la que se ha entrado a PS5NAS, así que funciona en
+  casa, desde fuera por Tailscale y en el navegador de la consola.
+* **Quién la ve:** todos los usuarios, o solo los que marques. Los
+  administradores las ven todas. Si un usuario no tiene ninguna, no le aparece
+  la pestaña.
+
+Es solo un acceso directo: PS5NAS no protege esas webs. Si una app no tiene su
+propia contraseña, cualquiera que llegue a ese puerto puede abrirla aunque no
+la vea en su lista.
+
 ## Conectarse con SFTP
 
 * Servidor: `192.168.100.208` en casa, o la IP `100.x.y.z` de Tailscale fuera.

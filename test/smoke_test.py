@@ -756,6 +756,55 @@ check(s == 200, "borrar usuario")
 s, j, _ = admin.req("POST", "/api/admin/user/delete", {"name": "admin"})
 check(s == 400, "no se puede borrar a sí mismo")
 
+print("== Apps: accesos directos a otras webs")
+evw = Web(); evw.req("POST", "/api/login", {"user": "eva", "pass": "reseteada1"})
+zw = Web(); zw.req("POST", "/api/login", {"user": "zoe", "pass": "deZoe123"})
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Machete IA", "target": "7860", "all": "1", "users": ""})
+check(s == 200 and len(j.get("id", "")) == 16, "el admin añade una app para todos")
+id_all = j["id"]
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Tailscale", "target": ":8090/", "all": "0", "users": "eva"})
+check(s == 200, "una app solo para eva (se acepta «:puerto»)")
+id_eva = j["id"]
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Router", "target": "http://192.168.1.1/", "all": "0", "users": ""})
+check(s == 200, "una app solo para administradores (URL completa)")
+id_adm = j["id"]
+for bad in ["javascript:alert(1)", "0", "70000", "8080 extra", "8080?x", "ftp://x", ""]:
+    s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Mala", "target": bad, "all": "1", "users": ""})
+    check(s == 400, f"destino no válido rechazado: {bad!r}")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "X", "target": "80", "all": "0", "users": "nadie"})
+check(s == 400, "usuario inexistente rechazado")
+s, j, _ = admin.req("GET", "/api/links")
+names = {l["name"]: l for l in j["links"]}
+check(set(names) == {"Machete IA", "Tailscale", "Router"} and names["Tailscale"]["target"] == "8090/"
+      and names["Tailscale"]["users"] == ["eva"] and names["Machete IA"]["all"] is True,
+      "el admin las ve todas, con a quién se muestran")
+s, j, _ = evw.req("GET", "/api/links")
+check(sorted(l["name"] for l in j["links"]) == ["Machete IA", "Tailscale"] and "users" not in j["links"][0],
+      "eva ve la de todos y la suya, sin la lista de usuarios")
+s, j, _ = zw.req("GET", "/api/links")
+check([l["name"] for l in j["links"]] == ["Machete IA"], "zoe solo ve la de todos")
+s, j, _ = Web().req("GET", "/api/links")
+check(s == 401, "sin sesión no se ven")
+s, j, _ = evw.req("POST", "/api/admin/link", {"name": "Mía", "target": "80", "all": "1", "users": ""})
+check(s == 403, "un usuario normal no puede crear apps")
+s, j, _ = admin.req("POST", "/api/admin/link", {"id": id_eva, "name": "Tailscale", "target": "8090",
+                                                "all": "0", "users": "eva,zoe"})
+s2, j2, _ = zw.req("GET", "/api/links")
+check(s == 200 and sorted(l["name"] for l in j2["links"]) == ["Machete IA", "Tailscale"], "editar: ahora también zoe")
+admin.req("POST", "/api/admin/user", {"name": "temporal", "password": "temporal1", "admin": "0", "enabled": "1",
+                                      "can_chpass": "1", "must_chpass": "0", "mounts": ""})
+admin.req("POST", "/api/admin/link", {"id": id_adm, "name": "Router", "target": "http://192.168.1.1/",
+                                      "all": "0", "users": "temporal"})
+admin.req("POST", "/api/admin/user/delete", {"name": "temporal"})
+s, j, _ = admin.req("GET", "/api/links")
+check([l for l in j["links"] if l["id"] == id_adm][0]["users"] == [], "al borrar un usuario desaparece de sus apps")
+conf = open(f"{BASE}/conf/users.conf").read()
+check(f"link\t{id_all}\t1\tMachete IA\t7860" in conf and f"linkuser\t{id_eva}\tzoe" in conf,
+      "las apps se guardan en users.conf")
+s, j, _ = admin.req("POST", "/api/admin/link/delete", {"id": id_adm})
+s2, j2, _ = admin.req("GET", "/api/links")
+check(s == 200 and len(j2["links"]) == 2, "borrar una app")
+
 print("== Web: ajustes y página")
 s, j, _ = admin.req("POST", "/api/admin/settings", {"pasv_address": "100.64.1.2"})
 check(s == 200, "guardar IP pasiva")

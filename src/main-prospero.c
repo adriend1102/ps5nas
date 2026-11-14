@@ -76,7 +76,7 @@ main(int argc, char *argv[]) {
   const char *dir = DEFAULT_CONFDIR;
   int c;
 
-  syscall(SYS_thr_set_name, -1, "ps5share.elf");
+  syscall(SYS_thr_set_name, -1, "ps5nas.elf");
 
   while((c = getopt(argc, argv, "d:h")) != -1) {
     switch(c) {
@@ -87,7 +87,9 @@ main(int argc, char *argv[]) {
     }
   }
 
-  /* Solo una instancia de ps5share. */
+  /* Solo una instancia (también la de versiones anteriores, que se
+     llamaban ps5share.elf). */
+  kill_all("ps5nas.elf");
   kill_all("ps5share.elf");
 
   /* No se detiene ningún otro proceso: otras apps (p. ej. Machete IA)

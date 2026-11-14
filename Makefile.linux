@@ -1,6 +1,6 @@
 # ps5share - compilación para Linux (pruebas locales)
 #   ./third_party/fetch.sh            (una vez: descarga wolfSSL/wolfSSH)
-#   make -f Makefile.linux && ./ps5share-linux -d ./ps5share-data
+#   make -f Makefile.linux && ./ps5nas-linux -d ./ps5nas-data
 
 VERSION_TAG := $(shell git describe --abbrev=6 --dirty --always --tags 2>/dev/null || echo dev)
 BUILD := build/linux
@@ -16,7 +16,7 @@ SOURCE += src/sha256.c src/notify.c src/main-linux.c
 
 WOLF_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(WOLF_SRC))
 
-all: ps5share-linux
+all: ps5nas-linux
 
 $(WOLF_DIR)/wolfssl/wolfcrypt/src/aes.c:
 	@echo "Faltan las dependencias: ejecuta ./third_party/fetch.sh"; exit 1
@@ -31,10 +31,10 @@ $(BUILD)/libwolf.a: $(WOLF_OBJ)
 src/webui.h: web/index.html tools/embed.py
 	python3 tools/embed.py $< $@
 
-ps5share-linux: $(SOURCE) src/webui.h $(wildcard src/*.h) $(BUILD)/libwolf.a
+ps5nas-linux: $(SOURCE) src/webui.h $(wildcard src/*.h) $(BUILD)/libwolf.a
 	$(CC) $(CFLAGS) -o $@ $(SOURCE) $(BUILD)/libwolf.a -lpthread -lm
 
 clean:
-	rm -rf ps5share-linux $(BUILD)
+	rm -rf ps5nas-linux $(BUILD)
 
 .PHONY: all clean

@@ -28,7 +28,7 @@ Törnblom (GPLv3).
  ┌───────────────────────────┐   Tailscale    ┌──────────────────────────────┐
  │ Navegador → http://ps5:8000│ ═════════════► │ tailscale.elf  (VPN, :8090)  │
  │ Mis archivos → SFTP ps5:2222│  (WireGuard)  │   └► reenvía a 127.0.0.1     │
- └───────────────────────────┘                 │ ps5share.elf                 │
+ └───────────────────────────┘                 │ ps5nas.elf                 │
                                                │   web :8000 · SFTP :2222     │
  En casa: http://192.168.100.208:8000          │   usuarios → carpetas del SSD│
           sftp 192.168.100.208 puerto 2222     └──────────────────────────────┘
@@ -39,7 +39,7 @@ Törnblom (GPLv3).
 | | |
 |---|---|
 | `PPSA27360.zip` | La app **PS5NAS** para la pantalla de inicio (lleva dentro el servidor). |
-| `ps5share.elf` | El payload para la PS5 (web + SFTP, y FTP opcional), por si lo prefieres sin app. |
+| `ps5nas.elf` | El payload para la PS5 (web + SFTP, y FTP opcional), por si lo prefieres sin app. |
 | `windows/enviar-payload.ps1` | Envía cualquier `.elf` a la PS5 (puerto 9021). |
 | `windows/instalar-tailscale-ps5.ps1` | Descarga la última versión de Tailscale para PS5 y la envía. |
 | `windows/planB-windows-subnet-router.ps1` | Plan B si Tailscale no funciona en tu firmware: el Windows hace de puente. |
@@ -55,7 +55,7 @@ ELF en el puerto 9021 (elfldr). Descomprime `PPSA27360.zip` y copia la carpeta
 con todos los permisos en `777`. En unos segundos aparece **PS5NAS** en la
 pantalla de inicio. Al abrirla:
 
-1. si el servidor no está en marcha, lo arranca (envía su `ps5share.elf` al
+1. si el servidor no está en marcha, lo arranca (envía su `ps5nas.elf` al
    cargador);
 2. abre el panel en el navegador de la PS5 (`http://127.0.0.1:8000`), donde
    inicias sesión con tu usuario;
@@ -71,7 +71,7 @@ aunque se reinicie el servidor. Dura 180 días o hasta que pulses **Salir**.
 
 ```powershell
 cd windows
-.\enviar-payload.ps1 -Archivo ..\ps5share.elf -PS5 192.168.100.208
+.\enviar-payload.ps1 -Archivo ..\ps5nas.elf -PS5 192.168.100.208
 ```
 
 En la PS5 aparecerá una notificación con las direcciones. La primera vez
@@ -156,7 +156,7 @@ el FTP de ps5share, donde solo ve sus carpetas.
 
 Los payloads se pierden al reiniciar la consola o salir del modo reposo sin
 jailbreak. Puedes abrir la app PS5NAS después de cada jailbreak, o añadir
-`tailscale.elf` y `ps5share.elf` (está dentro de la carpeta `assets` de la app)
+`tailscale.elf` y `ps5nas.elf` (está dentro de la carpeta `assets` de la app)
 a tu cargador automático
 (el autoloader o gestor de payloads que uses) para que se carguen solos tras
 cada jailbreak. La PS5 no atiende conexiones en modo reposo: tiene que estar
@@ -201,6 +201,19 @@ pestaña nueva. Los archivos de texto (`.txt`, `.md`, `.json`, `.srt`, `.ini`,
 código…) se pueden **editar y guardar** (Ctrl+S), y **Nuevo archivo** crea uno.
 También puedes crear carpetas, renombrar, borrar, subir (o arrastrar) y
 descargar. Todo funciona igual en las carpetas privadas cifradas y por SFTP.
+
+## Idiomas (español, inglés y alemán)
+
+* **Web:** se abre en el idioma del navegador (español, inglés o alemán; si es
+  otro, en inglés). Arriba a la derecha hay un selector para cambiarlo, que se
+  recuerda en ese dispositivo. Añadir `?lang=de` (o `en`, `es`) a la dirección
+  también lo fija. El correo de «¿Olvidaste tu contraseña?» sale en el idioma de
+  la web desde la que se pidió.
+* **App de la consola:** usa el idioma del sistema de la PS5. Con **CUADRADO**
+  se cambia (español → inglés → alemán) y se guarda; el panel que abre con
+  **X** sale en ese mismo idioma.
+* Las traducciones están en `web/i18n/strings.py`. Tras cambiarlas, ejecuta
+  `python3 tools/i18n.py` (y `--check` para ver textos sin traducir).
 
 ## Apps: accesos a otras webs de la consola
 
@@ -427,7 +440,7 @@ Con el [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) en Linux o WSL:
 ```sh
 ./third_party/fetch.sh          # una vez: wolfSSL v5.9.4, wolfSSH v1.6.0 y cJSON v1.7.19
 export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
-make -f Makefile.ps5            # genera ps5share.elf
+make -f Makefile.ps5            # genera ps5nas.elf
 make -f Makefile.ps5 test PS5_HOST=192.168.100.208   # compila y envía
 ```
 
@@ -436,7 +449,7 @@ Para probar en Linux sin consola:
 ```sh
 ./test/run_tests.sh             # compila la versión Linux y pasa ~240 pruebas
 BW_CLI=$(which bw) ./test/run_tests.sh   # además con la CLI oficial de Bitwarden
-./ps5share-linux -d ./datos     # web en :8000, SFTP en :2222
+./ps5nas-linux -d ./datos     # web en :8000, SFTP en :2222
 ```
 
 ### Estructura

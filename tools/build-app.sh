@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 
 make -f Makefile.ps5
 mkdir -p app/assets
-cp ps5share.elf app/assets/ps5share.elf
+cp ps5nas.elf app/assets/ps5nas.elf
 make -C app app
 
 TITLE=$(python3 -c "import json;print(json.load(open('app/sce_sys/param.json'))['titleId'])")

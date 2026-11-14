@@ -8,7 +8,7 @@
  *
  * Al abrirla:
  *   1. comprueba si el servidor ps5share está en marcha (puerto web);
- *   2. si no, envía /app0/assets/ps5share.elf al cargador de payloads
+ *   2. si no, envía /app0/assets/ps5nas.elf al cargador de payloads
  *      (127.0.0.1:9021) y espera a que arranque;
  *   3. abre el panel (http://127.0.0.1:<puerto>/) en el navegador de la
  *      consola.
@@ -40,6 +40,7 @@ extern "C"
     long sceKernelWrite(int fd, const void *buffer, std::size_t size);
     int sceSystemServiceHideSplashScreen();
     int sceSystemServiceLaunchWebBrowser(const char *uri, const void *param);
+    int sceSystemServiceParamGetInt(int param_id, int *value);
     int sceVideoOutOpen(std::int32_t user_id, std::int32_t bus_type, std::int32_t index,
                         const void *param);
     int sceVideoOutSetFlipRate(std::int32_t handle, std::int32_t rate);
@@ -317,23 +318,30 @@ bool port_open(std::uint16_t port) noexcept
     return true;
 }
 
-/* Envía el ELF incluido en la app al cargador de payloads. */
-bool send_payload(char *error, std::size_t error_len) noexcept
+enum class Err
 {
-    const int fd = sceKernelOpen("/app0/assets/ps5share.elf", 0, 0);
-    trace("abrir /app0/assets/ps5share.elf: %d", fd);
+    none,
+    no_elf,
+    no_loader,
+    send_failed,
+    no_answer,
+};
+
+/* Envía el ELF incluido en la app al cargador de payloads. */
+Err send_payload() noexcept
+{
+    const int fd = sceKernelOpen("/app0/assets/ps5nas.elf", 0, 0);
+    trace("abrir /app0/assets/ps5nas.elf: %d", fd);
     if (fd < 0)
     {
-        std::snprintf(error, error_len, "NO SE ENCUENTRA PS5SHARE.ELF EN LA APP");
-        return false;
+        return Err::no_elf;
     }
     const int s = connect_local(9021);
     trace("conectar al cargador 9021: %d", s);
     if (s < 0)
     {
         (void)sceKernelClose(fd);
-        std::snprintf(error, error_len, "EL CARGADOR DE PAYLOADS (9021) NO RESPONDE");
-        return false;
+        return Err::no_loader;
     }
     static std::uint8_t buf[65536];
     bool ok = true;
@@ -364,9 +372,7 @@ bool send_payload(char *error, std::size_t error_len) noexcept
     (void)sceKernelClose(fd);
     (void)sceNetSocketClose(s);
     trace("envío del servidor: %s", ok ? "ok" : "fallo");
-    if (!ok)
-        std::snprintf(error, error_len, "NO SE PUDO ENVIAR EL SERVIDOR AL CARGADOR");
-    return ok;
+    return ok ? Err::none : Err::send_failed;
 }
 
 /* Lee los puertos de /data/ps5share/users.conf (si la app puede verlo). */
@@ -400,7 +406,8 @@ void read_ports(unsigned &http, unsigned &sftp) noexcept
 unsigned g_https = 0;
 
 /* Pide /api/status al servidor: su IP de Tailscale y el puerto SFTP. */
-bool fetch_status(unsigned http, char *ts_ip, std::size_t ts_len, unsigned &sftp) noexcept
+bool fetch_status(unsigned http, char *ts_ip, std::size_t ts_len, unsigned &sftp,
+                  char app_lang[3]) noexcept
 {
     const int s = connect_local(static_cast<std::uint16_t>(http));
     if (s < 0)
@@ -454,7 +461,35 @@ bool fetch_status(unsigned http, char *ts_ip, std::size_t ts_len, unsigned &sftp
             hv = hv * 10 + static_cast<unsigned>(*h++ - '0');
     }
     g_https = (hv < 65536 && std::strstr(buf, "\"vault\":true")) ? hv : 0;
+    /* Idioma elegido para la app (vacío = el de la consola). */
+    app_lang[0] = 0;
+    const char *l = std::strstr(buf, "\"app_lang\":\"");
+    if (l && l[12] && l[13] && l[14] == '"')
+    {
+        app_lang[0] = l[12];
+        app_lang[1] = l[13];
+        app_lang[2] = 0;
+    }
     return true;
+}
+
+/* Guarda en el servidor el idioma elegido con CUADRADO. */
+void save_app_lang(unsigned http, const char *code) noexcept
+{
+    const int s = connect_local(static_cast<std::uint16_t>(http));
+    if (s < 0)
+        return;
+    char req[256];
+    const int n = std::snprintf(req, sizeof(req),
+                                "POST /api/app/lang HTTP/1.0\r\nHost: 127.0.0.1\r\n"
+                                "X-PS5Share: 1\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+                                "Content-Length: 7\r\n\r\nlang=%s",
+                                code);
+    if (n > 0)
+        (void)sceNetSend(s, req, static_cast<std::size_t>(n), 0);
+    char sink[512];
+    (void)sceNetRecv(s, sink, sizeof(sink), 0);
+    (void)sceNetSocketClose(s);
 }
 
 void local_ip(char *out, std::size_t len) noexcept
@@ -473,6 +508,161 @@ void local_ip(char *out, std::size_t len) noexcept
 /* Estado y dibujo                                                     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Idiomas.  La fuente solo tiene mayúsculas ASCII: sin tildes ni      */
+/* diéresis (AE, OE, UE y SS en alemán).                               */
+/* ------------------------------------------------------------------ */
+
+enum Lang : int
+{
+    lang_es = 0,
+    lang_en = 1,
+    lang_de = 2,
+    lang_count = 3,
+};
+
+struct Texts
+{
+    const char *code;       /* es / en / de (para la web) */
+    const char *tagline;
+    const char *checking;
+    const char *starting;
+    const char *waiting;
+    const char *ready;
+    const char *failed;
+    const char *home;
+    const char *away;
+    const char *web;        /* etiquetas de 8 caracteres */
+    const char *sftp;
+    const char *vault;
+    const char *port;
+    const char *no_ts;
+    const char *ts_hint;
+    const char *vault_note;
+    const char *sftp_note;
+    const char *open_panel;
+    const char *triangle;
+    const char *restart;
+    const char *square;
+    const char *language;
+    const char *no_browser; /* %08X y %s */
+    const char *no_elf;
+    const char *no_loader;
+    const char *send_failed;
+    const char *no_answer;  /* %u */
+};
+
+const Texts texts[lang_count] = {
+    {
+        "es",
+        "TU NAS EN LA PS5: SFTP, WEB, CARPETAS PRIVADAS Y CONTRASENAS",
+        "COMPROBANDO EL SERVIDOR...",
+        "ARRANCANDO EL SERVIDOR...",
+        "ESPERANDO A QUE EL SERVIDOR RESPONDA...",
+        "SERVIDOR EN MARCHA",
+        "NO SE PUDO ARRANCAR EL SERVIDOR",
+        "EN CASA (MISMA WIFI)",
+        "FUERA DE CASA (TAILSCALE)",
+        "WEB     ",
+        "SFTP    ",
+        "CLAVES  ",
+        "PUERTO",
+        "NO SE ENCUENTRA LA IP DE TAILSCALE",
+        "ARRANCA EL PAYLOAD DE TAILSCALE: SU IP APARECERA AQUI SOLA",
+        "CLAVES: SERVIDOR PARA LAS APPS Y LA EXTENSION DE BITWARDEN (AUTOALOJADO)",
+        "SFTP: MIS ARCHIVOS DE SAMSUNG, WINSCP, FILEZILLA... CON TU USUARIO",
+        "ABRIR EL PANEL DE ADMINISTRACION",
+        "TRIANGULO",
+        "REINICIAR EL SERVIDOR",
+        "CUADRADO",
+        "IDIOMA: ESPANOL",
+        "NO SE PUDO ABRIR EL NAVEGADOR (0X%08X). ABRE %s EN EL NAVEGADOR.",
+        "NO SE ENCUENTRA PS5NAS.ELF EN LA APP",
+        "EL CARGADOR DE PAYLOADS (9021) NO RESPONDE",
+        "NO SE PUDO ENVIAR EL SERVIDOR AL CARGADOR",
+        "EL SERVIDOR NO RESPONDE EN EL PUERTO %u",
+    },
+    {
+        "en",
+        "YOUR NAS ON THE PS5: SFTP, WEB, PRIVATE FOLDERS AND PASSWORDS",
+        "CHECKING THE SERVER...",
+        "STARTING THE SERVER...",
+        "WAITING FOR THE SERVER TO ANSWER...",
+        "SERVER RUNNING",
+        "COULD NOT START THE SERVER",
+        "AT HOME (SAME WI-FI)",
+        "AWAY FROM HOME (TAILSCALE)",
+        "WEB     ",
+        "SFTP    ",
+        "VAULT   ",
+        "PORT",
+        "TAILSCALE IP NOT FOUND",
+        "START THE TAILSCALE PAYLOAD: ITS IP WILL SHOW UP HERE BY ITSELF",
+        "VAULT: SERVER FOR THE BITWARDEN APPS AND BROWSER EXTENSION (SELF-HOSTED)",
+        "SFTP: SAMSUNG MY FILES, WINSCP, FILEZILLA... WITH YOUR USER",
+        "OPEN THE ADMIN PANEL",
+        "TRIANGLE",
+        "RESTART THE SERVER",
+        "SQUARE",
+        "LANGUAGE: ENGLISH",
+        "COULD NOT OPEN THE BROWSER (0X%08X). OPEN %s IN THE BROWSER.",
+        "PS5NAS.ELF IS MISSING FROM THE APP",
+        "THE PAYLOAD LOADER (9021) DOES NOT ANSWER",
+        "COULD NOT SEND THE SERVER TO THE LOADER",
+        "THE SERVER DOES NOT ANSWER ON PORT %u",
+    },
+    {
+        "de",
+        "DEIN NAS AUF DER PS5: SFTP, WEB, PRIVATE ORDNER UND PASSWOERTER",
+        "SERVER WIRD GEPRUEFT...",
+        "SERVER WIRD GESTARTET...",
+        "WARTE AUF ANTWORT DES SERVERS...",
+        "SERVER LAEUFT",
+        "SERVER KONNTE NICHT GESTARTET WERDEN",
+        "ZU HAUSE (GLEICHES WLAN)",
+        "UNTERWEGS (TAILSCALE)",
+        "WEB     ",
+        "SFTP    ",
+        "TRESOR  ",
+        "PORT",
+        "TAILSCALE-IP NICHT GEFUNDEN",
+        "STARTE DAS TAILSCALE-PAYLOAD: DIE IP ERSCHEINT DANN HIER",
+        "TRESOR: SERVER FUER DIE BITWARDEN-APPS UND -BROWSERERWEITERUNG (SELBST GEHOSTET)",
+        "SFTP: SAMSUNG EIGENE DATEIEN, WINSCP, FILEZILLA... MIT DEINEM BENUTZER",
+        "VERWALTUNG OEFFNEN",
+        "DREIECK",
+        "SERVER NEU STARTEN",
+        "QUADRAT",
+        "SPRACHE: DEUTSCH",
+        "BROWSER KONNTE NICHT GEOEFFNET WERDEN (0X%08X). OEFFNE %s IM BROWSER.",
+        "PS5NAS.ELF FEHLT IN DER APP",
+        "DER PAYLOAD-LOADER (9021) ANTWORTET NICHT",
+        "SERVER KONNTE NICHT AN DEN LOADER GESENDET WERDEN",
+        "DER SERVER ANTWORTET NICHT AUF PORT %u",
+    },
+};
+
+/* Idioma de la consola: 3 y 20 español, 4 alemán; el resto, inglés. */
+Lang system_lang() noexcept
+{
+    int v = 1;
+    if (sceSystemServiceParamGetInt(1 /* SCE_SYSTEM_SERVICE_PARAM_ID_LANG */, &v) < 0)
+        return lang_en;
+    if (v == 3 || v == 20)
+        return lang_es;
+    if (v == 4)
+        return lang_de;
+    return lang_en;
+}
+
+Lang lang_from_code(const char *c, Lang fallback) noexcept
+{
+    for (int i = 0; i < lang_count; ++i)
+        if (c[0] == texts[i].code[0] && c[1] == texts[i].code[1])
+            return static_cast<Lang>(i);
+    return fallback;
+}
+
 enum class Phase
 {
     checking,
@@ -489,15 +679,17 @@ struct State
     unsigned sftp = 2222;
     char ip[32] = "?";
     char ts_ip[20] = "";
-    char error[128] = "";
-    char browser[96] = "";
+    Err err = Err::none;
+    char browser[128] = "";
+    Lang lang = lang_en;
     bool started_by_app = false;
     int frame = 0;
 };
 
 void draw(Canvas &c, const State &st) noexcept
 {
-    char buf[160];
+    char buf[200];
+    const Texts &t = texts[st.lang];
     c.rect(0, 0, frame_width, frame_height, bg);
 
     /* cabecera: servidor con candado */
@@ -515,81 +707,90 @@ void draw(Canvas &c, const State &st) noexcept
     c.rect(190, 162, 40, 30, lock);
     c.rect(207, 170, 6, 14, bg);
     c.text(260, 112, "PS5NAS", 9, white);
-    c.text(262, 186, "TU NAS EN LA PS5: SFTP, WEB, CARPETAS PRIVADAS Y CONTRASENAS", 3, muted);
+    c.text(262, 186, t.tagline, 3, muted);
 
     c.rect(140, 260, 1640, 2, line);
 
     /* estado */
-    const char *label = "COMPROBANDO EL SERVIDOR...";
+    const char *label = t.checking;
     std::uint32_t col = warn;
     switch (st.phase)
     {
     case Phase::checking:
         break;
     case Phase::starting:
-        label = "ARRANCANDO EL SERVIDOR...";
+        label = t.starting;
         break;
     case Phase::waiting:
-        label = "ESPERANDO A QUE EL SERVIDOR RESPONDA...";
+        label = t.waiting;
         break;
     case Phase::ready:
-        label = "SERVIDOR EN MARCHA";
+        label = t.ready;
         col = ok;
         break;
     case Phase::failed:
-        label = "NO SE PUDO ARRANCAR EL SERVIDOR";
+        label = t.failed;
         col = bad;
         break;
     }
     c.rect(140, 318, 28, 28, col);
     c.text(196, 314, label, 6, white);
     if (st.phase == Phase::failed)
-        c.text(196, 380, st.error, 3, bad);
+    {
+        const char *e = st.err == Err::no_elf      ? t.no_elf
+                        : st.err == Err::no_loader ? t.no_loader
+                        : st.err == Err::send_failed ? t.send_failed
+                                                     : t.no_answer;
+        std::snprintf(buf, sizeof(buf), e, st.http);
+        c.text(196, 380, buf, 3, bad);
+    }
 
     /* conexión */
     c.rect(140, 400, 1640, 520, panel);
-    c.text(190, 424, "EN CASA (MISMA WIFI)", 3, muted);
-    std::snprintf(buf, sizeof(buf), "WEB     HTTP://%s:%u", st.ip, st.http);
+    c.text(190, 424, t.home, 3, muted);
+    std::snprintf(buf, sizeof(buf), "%sHTTP://%s:%u", t.web, st.ip, st.http);
     c.text(190, 460, buf, 5, white);
-    std::snprintf(buf, sizeof(buf), "SFTP    %s  PUERTO %u", st.ip, st.sftp);
+    std::snprintf(buf, sizeof(buf), "%s%s  %s %u", t.sftp, st.ip, t.port, st.sftp);
     c.text(190, 510, buf, 5, white);
     if (g_https)
     {
-        std::snprintf(buf, sizeof(buf), "CLAVES  HTTPS://%s:%u", st.ip, g_https);
+        std::snprintf(buf, sizeof(buf), "%sHTTPS://%s:%u", t.vault, st.ip, g_https);
         c.text(190, 560, buf, 5, white);
     }
     c.rect(190, 620, 1540, 2, line);
-    c.text(190, 640, "FUERA DE CASA (TAILSCALE)", 3, muted);
+    c.text(190, 640, t.away, 3, muted);
     if (st.ts_ip[0])
     {
-        std::snprintf(buf, sizeof(buf), "WEB     HTTP://%s:%u", st.ts_ip, st.http);
+        std::snprintf(buf, sizeof(buf), "%sHTTP://%s:%u", t.web, st.ts_ip, st.http);
         c.text(190, 676, buf, 5, white);
-        std::snprintf(buf, sizeof(buf), "SFTP    %s  PUERTO %u", st.ts_ip, st.sftp);
+        std::snprintf(buf, sizeof(buf), "%s%s  %s %u", t.sftp, st.ts_ip, t.port, st.sftp);
         c.text(190, 726, buf, 5, white);
         if (g_https)
         {
-            std::snprintf(buf, sizeof(buf), "CLAVES  HTTPS://%s:%u", st.ts_ip, g_https);
+            std::snprintf(buf, sizeof(buf), "%sHTTPS://%s:%u", t.vault, st.ts_ip, g_https);
             c.text(190, 776, buf, 5, white);
         }
     }
     else
     {
-        c.text(190, 676, "NO SE ENCUENTRA LA IP DE TAILSCALE", 5, warn);
-        c.text(190, 734, "ARRANCA EL PAYLOAD DE TAILSCALE: SU IP APARECERA AQUI SOLA", 3, muted);
+        c.text(190, 676, t.no_ts, 5, warn);
+        c.text(190, 734, t.ts_hint, 3, muted);
     }
-    c.text(190, 846, "CLAVES: SERVIDOR PARA LAS APPS Y LA EXTENSION DE BITWARDEN (AUTOALOJADO)", 3, muted);
-    c.text(190, 880, "SFTP: MIS ARCHIVOS DE SAMSUNG, WINSCP, FILEZILLA... CON TU USUARIO", 3, muted);
+    c.text(190, 846, t.vault_note, 3, muted);
+    c.text(190, 880, t.sftp_note, 3, muted);
 
     /* controles */
     if (st.phase == Phase::ready)
     {
         unsigned x = c.text(140, 945, "X", 5, accent);
-        c.text(x + 20, 945, "ABRIR EL PANEL DE ADMINISTRACION", 5, white);
+        c.text(x + 20, 945, t.open_panel, 5, white);
     }
-    unsigned x = c.text(140, 995, "TRIANGULO", 5, accent);
-    c.text(x + 20, 995, "REINICIAR EL SERVIDOR", 5, white);
+    unsigned x = c.text(140, 995, t.triangle, 5, accent);
+    c.text(x + 20, 995, t.restart, 5, white);
+    x = c.text(140, 1040, t.square, 3, accent);
+    c.text(x + 14, 1040, t.language, 3, white);
     if (st.browser[0])
-        c.text(1000, 1010, st.browser, 3, muted);
+        c.text(800, 1052, st.browser, 2, muted);
 
     /* indicador de actividad */
     if (st.phase == Phase::checking || st.phase == Phase::starting ||
@@ -604,12 +805,11 @@ void draw(Canvas &c, const State &st) noexcept
 void open_panel(State &st) noexcept
 {
     char url[64];
-    std::snprintf(url, sizeof(url), "http://127.0.0.1:%u/", st.http);
+    std::snprintf(url, sizeof(url), "http://127.0.0.1:%u/?lang=%s", st.http, texts[st.lang].code);
     const int r = sceSystemServiceLaunchWebBrowser(url, nullptr);
     trace("abrir navegador %s: 0x%08x", url, static_cast<unsigned>(r));
     if (r < 0)
-        std::snprintf(st.browser, sizeof(st.browser),
-                      "NO SE PUDO ABRIR EL NAVEGADOR (0X%08X). ABRE %s EN EL NAVEGADOR.",
+        std::snprintf(st.browser, sizeof(st.browser), texts[st.lang].no_browser,
                       static_cast<unsigned>(r), url);
     else
         st.browser[0] = 0;
@@ -671,6 +871,7 @@ int main()
     }
 
     State st{};
+    st.lang = system_lang();
     read_ports(st.http, st.sftp);
     local_ip(st.ip, sizeof(st.ip));
     trace("inicio: pad=%d user=0x%x http=%u sftp=%u ip=%s", pad, static_cast<unsigned>(user),
@@ -680,6 +881,7 @@ int main()
     int ticks = 0;          /* décimas de segundo en la fase actual */
     std::uint32_t prev_buttons = 0;
     bool opened = false;
+    bool lang_chosen = false;   /* cambiado con CUADRADO en esta sesión */
     unsigned last_sig = 0xffffffffU;
 
     for (;;)
@@ -696,7 +898,7 @@ int main()
                     st.phase = Phase::ready;
                     ticks = 0;
                 }
-                else if (send_payload(st.error, sizeof(st.error)))
+                else if ((st.err = send_payload()) == Err::none)
                 {
                     st.phase = Phase::waiting;
                     st.started_by_app = true;
@@ -708,7 +910,7 @@ int main()
                 }
                 break;
             case Phase::starting:
-                if (send_payload(st.error, sizeof(st.error)))
+                if ((st.err = send_payload()) == Err::none)
                 {
                     st.phase = Phase::waiting;
                     ticks = 0;
@@ -731,8 +933,7 @@ int main()
                     else if (ticks > 900)
                     {
                         st.phase = Phase::failed;
-                        std::snprintf(st.error, sizeof(st.error),
-                                      "EL SERVIDOR NO RESPONDE EN EL PUERTO %u", st.http);
+                        st.err = Err::no_answer;
                     }
                 }
                 break;
@@ -741,8 +942,13 @@ int main()
                 if (ticks++ % 100 == 0)
                 {
                     char ts[20] = "";
-                    if (fetch_status(st.http, ts, sizeof(ts), st.sftp))
+                    char al[3] = "";
+                    if (fetch_status(st.http, ts, sizeof(ts), st.sftp, al))
+                    {
                         std::snprintf(st.ts_ip, sizeof(st.ts_ip), "%s", ts);
+                        if (al[0] && !lang_chosen)
+                            st.lang = lang_from_code(al, st.lang);
+                    }
                 }
                 if (!opened)
                 {
@@ -770,8 +976,16 @@ int main()
                     if (pressed & 0x1000U)
                     {
                         st.phase = Phase::starting;
-                        st.error[0] = 0;
+                        st.err = Err::none;
                         opened = true; /* no volver a abrir el navegador solo */
+                    }
+                    if (pressed & 0x8000U) /* CUADRADO: siguiente idioma */
+                    {
+                        st.lang = static_cast<Lang>((st.lang + 1) % lang_count);
+                        lang_chosen = true;
+                        st.browser[0] = 0;
+                        if (st.phase == Phase::ready)
+                            save_app_lang(st.http, texts[st.lang].code);
                     }
                 }
             }
@@ -786,7 +1000,8 @@ int main()
                              static_cast<unsigned>(std::strlen(st.ip)) +
                              static_cast<unsigned>(std::strlen(st.ts_ip)) * 13U + st.sftp * 5U +
                              static_cast<unsigned>(st.ts_ip[std::strlen(st.ts_ip) ? std::strlen(st.ts_ip) - 1 : 0]) * 17U +
-                             static_cast<unsigned>(std::strlen(st.error)) * 7U + st.http * 3U;
+                             static_cast<unsigned>(st.err) * 7U + st.http * 3U +
+                             static_cast<unsigned>(st.lang) * 1000000U;
         if (sig != last_sig || st.frame < 2)
         {
             last_sig = sig;

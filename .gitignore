@@ -1,6 +1,6 @@
 *.elf
-ps5share-linux
-ps5share-data/
+ps5nas-linux
+ps5nas-data/
 dist/
 build/
 third_party/wolfssl/
@@ -8,7 +8,9 @@ third_party/wolfssh/
 app/.deps/
 app/build/
 app/dist/
-app/assets/ps5share.elf
+app/assets/ps5nas.elf
 app/runtime/libc.prx
 __pycache__/
 third_party/cjson/
+ps5share-linux
+__pycache__/

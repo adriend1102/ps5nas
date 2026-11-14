@@ -709,6 +709,8 @@ h_status(req_t *r) {
   uint16_t sftp_port = st->sftp_enabled ? st->sftp_port : 0;
   uint16_t https_port = st->https_enabled ? st->https_port : 0;
   int vault_on = st->vault_enabled;
+  char app_lang[3];
+  memcpy(app_lang, st->app_lang, sizeof(app_lang));
   cfg_unlock();
   tsip_get(ts, sizeof(ts));
   sb_printf(&b, "{\"name\":\"PS5NAS\",\"setup\":%s,\"recover_email\":%s,"
@@ -720,8 +722,31 @@ h_status(req_t *r) {
   sb_json_str(&b, VERSION_TAG);
   sb_puts(&b, ",\"tailscale_ip\":");
   sb_json_str(&b, ts);
+  sb_puts(&b, ",\"app_lang\":");
+  sb_json_str(&b, app_lang);
   sb_puts(&b, "}");
   return send_json(r, 200, &b, NULL);
+}
+
+
+/* Idioma elegido en la app de la consola (botón CUADRADO).  Solo cambia el
+   idioma de esa pantalla, así que no pide sesión (sí la cabecera CSRF). */
+static int
+h_app_lang(req_t *r) {
+  char lang[8], err[128];
+  settings_t s;
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "lang", lang, sizeof(lang));
+  if(strcmp(lang, "es") && strcmp(lang, "en") && strcmp(lang, "de") && lang[0]) {
+    return send_err(r, 400, "Idioma no válido");
+  }
+  cfg_lock();
+  memcpy(&s, cfg_settings(), sizeof(s));
+  cfg_unlock();
+  memcpy(s.app_lang, lang, 2);
+  s.app_lang[lang[0] ? 2 : 0] = 0;
+  if(cfg_update_settings(&s, err, sizeof(err))) return send_err(r, 400, err);
+  return send_ok(r);
 }
 
 
@@ -900,6 +925,7 @@ typedef struct mailjob {
   char to[CFG_EMAIL_MAX+1];
   char user[CFG_NAME_MAX+1];
   char pass[CRYPT_SEAL_MAX+1];
+  char lang[3];                  /* idioma de la web desde la que se pidió */
 } mailjob_t;
 
 
@@ -907,6 +933,30 @@ static void*
 mail_thread(void *p) {
   mailjob_t *j = p;
   char body[1024], err[256];
+  const char *subject = "PS5NAS: tu contraseña";
+  if(!strcmp(j->lang, "en")) {
+    subject = "PS5NAS: your password";
+    snprintf(body, sizeof(body),
+             "Hi %s,\n\n"
+             "Someone (probably you) asked to recover the password of your PS5NAS account.\n\n"
+             "User: %s\n"
+             "Password: %s\n\n"
+             "Use it to connect over SFTP or on the web. If you can, change it afterwards on the web "
+             "(“My account” button).\n\n"
+             "If it was not you, tell the console's administrator.\n\n"
+             "-- PS5NAS\n", j->user, j->user, j->pass);
+  } else if(!strcmp(j->lang, "de")) {
+    subject = "PS5NAS: dein Passwort";
+    snprintf(body, sizeof(body),
+             "Hallo %s,\n\n"
+             "jemand (vermutlich du) hat angefordert, das Passwort deines PS5NAS-Kontos wiederherzustellen.\n\n"
+             "Benutzer: %s\n"
+             "Passwort: %s\n\n"
+             "Damit kannst du dich per SFTP oder im Web anmelden. Ändere es danach am besten im Web "
+             "(Schaltfläche „Mein Konto“).\n\n"
+             "Wenn du das nicht warst, sag dem Administrator der Konsole Bescheid.\n\n"
+             "-- PS5NAS\n", j->user, j->user, j->pass);
+  } else
   snprintf(body, sizeof(body),
            "Hola, %s:\n\n"
            "Alguien (seguramente tú) ha pedido recuperar la contraseña de tu cuenta de PS5NAS.\n\n"
@@ -916,7 +966,7 @@ mail_thread(void *p) {
            "(botón «Mi cuenta»).\n\n"
            "Si no lo has pedido tú, avisa al administrador de la consola.\n\n"
            "-- PS5NAS\n", j->user, j->user, j->pass);
-  if(!smtp_send(j->to, "PS5NAS: tu contraseña", body, err, sizeof(err))) {
+  if(!smtp_send(j->to, subject, body, err, sizeof(err))) {
     LOG_PRINTF("ps5share: enviado el correo de recuperación de '%s'\n", j->user);
   }
   memset(body, 0, sizeof(body));
@@ -937,6 +987,8 @@ h_forgot_email(req_t *r) {
   if(rl_blocked(ip)) return send_err(r, 429, "Demasiados intentos. Espera unos minutos.");
   get_param(r->body, "user", user, sizeof(user));
   get_param(r->body, "email", email, sizeof(email));
+  char lang[8] = "";
+  get_param(r->body, "lang", lang, sizeof(lang));
   cfg_lock();
   recover = cfg_settings()->recover_email;
   cfg_unlock();
@@ -965,6 +1017,7 @@ h_forgot_email(req_t *r) {
     if(j && !cfg_get_password(user, j->pass, sizeof(j->pass))) {
       snprintf(j->to, sizeof(j->to), "%s", u.email);
       snprintf(j->user, sizeof(j->user), "%s", u.name);
+      if(!strcmp(lang, "en") || !strcmp(lang, "de")) memcpy(j->lang, lang, 3);
       pthread_t t;
       pthread_attr_t attr;
       pthread_attr_init(&attr);
@@ -2001,6 +2054,7 @@ static const route_t routes[] = {
   {"POST", "/api/me/password",          h_me_password,         1},
   {"POST", "/api/me/email",             h_me_email,            1},
   {"POST", "/api/forgot/email",         h_forgot_email,        0},
+  {"POST", "/api/app/lang",             h_app_lang,            0},
   {"POST", "/api/forgot/request",       h_forgot_request,      0},
   {"GET",  "/api/forgot/status",        h_forgot_status,       0},
   {"GET",  "/api/fs/list",              h_fs_list,             1},

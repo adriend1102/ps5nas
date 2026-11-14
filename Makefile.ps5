@@ -26,7 +26,7 @@ SOURCE += src/sha256.c src/notify.c src/main-prospero.c src/ps5compat.c
 
 WOLF_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(WOLF_SRC))
 
-all: ps5share.elf
+all: ps5nas.elf
 
 $(WOLF_DIR)/wolfssl/wolfcrypt/src/aes.c:
 	@echo "Faltan las dependencias: ejecuta ./third_party/fetch.sh"; exit 1
@@ -41,13 +41,13 @@ $(BUILD)/libwolf.a: $(WOLF_OBJ)
 src/webui.h: web/index.html tools/embed.py
 	python3 tools/embed.py $< $@
 
-ps5share.elf: $(SOURCE) src/webui.h $(wildcard src/*.h) $(BUILD)/libwolf.a
+ps5nas.elf: $(SOURCE) src/webui.h $(wildcard src/*.h) $(BUILD)/libwolf.a
 	$(CC) $(CFLAGS) -o $@ $(SOURCE) $(BUILD)/libwolf.a -lpthread
 
 clean:
-	rm -rf ps5share.elf $(BUILD)
+	rm -rf ps5nas.elf $(BUILD)
 
-test: ps5share.elf
+test: ps5nas.elf
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p $(PS5_PORT) $<
 
 .PHONY: all clean test

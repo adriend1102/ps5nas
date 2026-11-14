@@ -2,7 +2,7 @@
   Envía un payload ELF al cargador de la PS5 (elfldr, puerto 9021).
 
   Uso:
-    .\enviar-payload.ps1 -Archivo ..\ps5share.elf
+    .\enviar-payload.ps1 -Archivo ..\ps5nas.elf
     .\enviar-payload.ps1 -Archivo .\tailscale.elf -PS5 192.168.100.208
 #>
 param(

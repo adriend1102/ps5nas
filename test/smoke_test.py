@@ -656,6 +656,10 @@ check(s == 200 and me["email"] == "zoe@example.com" and not me["must_chpass"],
       "al cambiar la contraseña la primera vez puede poner su correo")
 s, j, _ = admin.req("POST", "/api/admin/user/password", {"name": "zoe"})
 check(j.get("password") == "deZoe123", "el admin ve la contraseña que eligió zoe")
+n0 = len(smtps.msgs)
+s, j, _ = Web().req("POST", "/api/forgot/email", {"user": "zoe", "email": "zoe@example.com", "lang": "de"})
+check(s == 200 and wait_mail(smtps, n0 + 1) and smtps.msgs[-1]["subject"] == "PS5NAS: dein Passwort"
+      and "Passwort: deZoe123" in smtps.msgs[-1]["body"], "el correo de recuperación sale en el idioma de la web (alemán)")
 
 print("== Recordar sesión y reinicio del servidor")
 import signal, subprocess, socket
@@ -668,7 +672,7 @@ def restart():
             time.sleep(0.1)
         except OSError:
             break
-    p = subprocess.Popen(["./ps5share-linux", "-d", BASE + "/conf"], stdout=open(BASE + "/server2.log", "a"),
+    p = subprocess.Popen(["./ps5nas-linux", "-d", BASE + "/conf"], stdout=open(BASE + "/server2.log", "a"),
                          stderr=subprocess.STDOUT)
     open(BASE + "/server.pid", "w").write(str(p.pid))
     for _ in range(100):
@@ -805,6 +809,21 @@ s, j, _ = admin.req("POST", "/api/admin/link/delete", {"id": id_adm})
 s2, j2, _ = admin.req("GET", "/api/links")
 check(s == 200 and len(j2["links"]) == 2, "borrar una app")
 
+print("== Idioma de la app de la consola")
+s, j, _ = Web().req("GET", "/api/status")
+check(s == 200 and j.get("app_lang") == "", "sin elegir: la app usa el idioma de la consola")
+s, j, _ = Web().req("POST", "/api/app/lang", {"lang": "de"}, csrf=False)
+check(s == 403, "cambiar el idioma de la app exige la cabecera CSRF")
+s, j, _ = Web().req("POST", "/api/app/lang", {"lang": "fr"})
+check(s == 400, "idioma no admitido rechazado")
+s, j, _ = Web().req("POST", "/api/app/lang", {"lang": "de"})
+s2, j2, _ = Web().req("GET", "/api/status")
+check(s == 200 and j2["app_lang"] == "de" and "set\tapp_lang\tde" in open(f"{BASE}/conf/users.conf").read(),
+      "el idioma elegido en la app se guarda")
+Web().req("POST", "/api/app/lang", {"lang": ""})
+s, j, _ = Web().req("GET", "/api/status")
+check(j["app_lang"] == "", "y se puede volver al de la consola")
+
 print("== Web: ajustes y página")
 s, j, _ = admin.req("POST", "/api/admin/settings", {"pasv_address": "100.64.1.2"})
 check(s == 200, "guardar IP pasiva")
@@ -812,6 +831,8 @@ s, j, _ = admin.req("POST", "/api/admin/settings", {"pasv_address": "1.2.3.4; rm
 check(s == 400, "IP pasiva inválida rechazada")
 s, body, h = admin.req("GET", "/", raw=True)
 check(s == 200 and b"PS5NAS" in body, "página web servida")
+check(b"I18N_DATA" in body and "Willkommen bei PS5NAS".encode() in body and b"Welcome to PS5NAS" in body,
+      "la página lleva las traducciones (inglés y alemán)")
 
 print()
 print("RESULTADO:", "TODO OK" if FAILS == 0 else f"{FAILS} FALLOS")

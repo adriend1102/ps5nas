@@ -22,7 +22,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" -addext 
   -keyout "$T/ca/self.key" -out "$T/ca/self.pem" 2>/dev/null
 export PS5SHARE_TEST_CA="$T/ca/ca.pem"
 printf 'set\tftp_enabled\t1\n' > "$T/conf/users.conf"   # las pruebas cubren también FTP
-./ps5share-linux -d "$T/conf" > "$T/server.log" 2>&1 &
+./ps5nas-linux -d "$T/conf" > "$T/server.log" 2>&1 &
 echo $! > "$T/server.pid"     # smoke_test.py lo reinicia para probar la persistencia
 trap 'kill $(cat "$T/server.pid") 2>/dev/null; rm -rf "$T"' EXIT
 # espera a que estén los tres servicios (la primera vez genera las claves SSH)

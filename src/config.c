@@ -406,6 +406,8 @@ load_file(const char *path) {
         snprintf(g_settings.smtp_from_name, sizeof(g_settings.smtp_from_name), "%s", v);
       else if(!strcmp(k, "recover_email")) g_settings.recover_email = atoi(v);
       else if(!strcmp(k, "recover_admin")) g_settings.recover_admin = atoi(v);
+      else if(!strcmp(k, "app_lang") && strlen(v) == 2)
+        snprintf(g_settings.app_lang, sizeof(g_settings.app_lang), "%s", v);
       else if(!strcmp(k, "vault_enabled")) g_settings.vault_enabled = atoi(v);
       else if(!strcmp(k, "vault_dir")) {
         if(!v[0] || valid_realpath(v))
@@ -508,6 +510,7 @@ cfg_save_locked(void) {
   fprintf(f, "set\tsmtp_from_name\t%s\n", g_settings.smtp_from_name);
   fprintf(f, "set\trecover_email\t%d\n", g_settings.recover_email);
   fprintf(f, "set\trecover_admin\t%d\n", g_settings.recover_admin);
+  if(g_settings.app_lang[0]) fprintf(f, "set\tapp_lang\t%s\n", g_settings.app_lang);
   fprintf(f, "set\tvault_enabled\t%d\n", g_settings.vault_enabled);
   fprintf(f, "set\tvault_dir\t%s\n", g_settings.vault_dir);
   fprintf(f, "set\tvault_domain\t%s\n", g_settings.vault_domain);

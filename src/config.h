@@ -69,6 +69,7 @@ typedef struct settings {
   char     smtp_from_name[64];
   int      recover_email;     /* permitir «olvidé mi contraseña» por correo */
   int      recover_admin;     /* permitir pedir la contraseña a un administrador */
+  char     app_lang[3];       /* idioma de la app de la consola ("" = el del sistema) */
   /* Gestor de contraseñas (compatible con Bitwarden) */
   int      vault_enabled;
   char     vault_dir[PATH_MAX];   /* carpeta de datos (vacía = CONFIG/vault) */

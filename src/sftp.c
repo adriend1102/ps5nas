@@ -878,9 +878,14 @@ cb_auth(byte type, WS_UserAuthData *d, void *ctx) {
   pass[d->sf.password.passwordSz] = 0;
 
   inet_ntop(AF_INET, &s->peer.sin_addr, ip, sizeof(ip));
+  int via_app = 0;
   int ok = !memchr(d->username, 0, d->usernameSz) &&
-           !cfg_authenticate(user, pass, &s->user);
-  if(ok && !s->user.must_chpass) cfg_unlock_key(s->user.name, pass, &s->key);
+           !cfg_authenticate_service(user, pass, &s->user, &via_app);
+  if(ok && !s->user.must_chpass) {
+    /* Con una contraseña de aplicación la clave se abre con la guardada. */
+    if(via_app) cfg_unlock_key_stored(s->user.name, &s->key);
+    else cfg_unlock_key(s->user.name, pass, &s->key);
+  }
   memset(pass, 0, sizeof(pass));
 
   if(!ok) {

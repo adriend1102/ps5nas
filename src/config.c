@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #ifdef __PROSPERO__
 #include <sys/types.h>
@@ -18,6 +19,7 @@
 #include "crypt.h"
 #include "log.h"
 #include "sha256.h"
+#include "totp.h"
 
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -374,7 +376,7 @@ static int
 load_file(const char *path) {
   FILE *f = fopen(path, "r");
   char line[PATH_MAX + 256];
-  char *fld[8];
+  char *fld[10];
 
   if(!f) return -1;
 
@@ -382,7 +384,7 @@ load_file(const char *path) {
     line[strcspn(line, "\r\n")] = 0;
     if(!line[0] || line[0] == '#') continue;
 
-    int n = split_tabs(line, fld, 8);
+    int n = split_tabs(line, fld, 10);
     if(!strcmp(fld[0], "set") && n >= 3) {
       const char *k = fld[1], *v = fld[2];
       if(!strcmp(k, "ftp_port")) g_settings.ftp_port = atoi(v);
@@ -454,6 +456,28 @@ load_file(const char *path) {
     } else if(!strcmp(fld[0], "vault") && n >= 2) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(u) u->vault = 1;
+    } else if(!strcmp(fld[0], "totp") && n >= 3) {
+      user_t *u = cfg_find_user_locked(fld[1]);
+      if(u && strlen(fld[2]) < sizeof(u->totp)) {
+        snprintf(u->totp, sizeof(u->totp), "%s", fld[2]);
+        u->totp_since = n >= 4 ? atoll(fld[3]) : 0;
+      }
+    } else if(!strcmp(fld[0], "rcode") && n >= 3) {
+      user_t *u = cfg_find_user_locked(fld[1]);
+      if(u && u->nrcodes < CFG_RCODES && strlen(fld[2]) == 32)
+        snprintf(u->rcodes[u->nrcodes++], sizeof(u->rcodes[0]), "%s", fld[2]);
+    } else if(!strcmp(fld[0], "apppw") && n >= 6) {
+      user_t *u = cfg_find_user_locked(fld[1]);
+      if(!u || u->napppw >= CFG_MAX_APPPW || strlen(fld[2]) != 8 || strlen(fld[3]) > CFG_APPPW_LABEL ||
+         strlen(fld[4]) != 16 || strlen(fld[5]) != 64) continue;
+      apppw_t *a = &u->apppw[u->napppw++];
+      memset(a, 0, sizeof(*a));
+      snprintf(a->id, sizeof(a->id), "%s", fld[2]);
+      snprintf(a->label, sizeof(a->label), "%s", fld[3]);
+      snprintf(a->salt, sizeof(a->salt), "%s", fld[4]);
+      snprintf(a->hash, sizeof(a->hash), "%s", fld[5]);
+      a->created = n >= 7 ? atoll(fld[6]) : 0;
+      a->used = n >= 8 ? atoll(fld[7]) : 0;
     } else if(!strcmp(fld[0], "email") && n >= 3) {
       user_t *u = cfg_find_user_locked(fld[1]);
       if(u && cfg_valid_email(fld[2])) snprintf(u->email, sizeof(u->email), "%s", fld[2]);
@@ -542,6 +566,13 @@ cfg_save_locked(void) {
     if(u->pwenc[0]) fprintf(f, "pw\t%s\t%s\n", u->name, u->pwenc);
     if(u->email[0]) fprintf(f, "email\t%s\t%s\n", u->name, u->email);
     if(u->vault) fprintf(f, "vault\t%s\n", u->name);
+    if(u->totp[0]) fprintf(f, "totp\t%s\t%s\t%lld\n", u->name, u->totp, u->totp_since);
+    for(int j=0; j<u->nrcodes; j++) fprintf(f, "rcode\t%s\t%s\n", u->name, u->rcodes[j]);
+    for(int j=0; j<u->napppw; j++) {
+      const apppw_t *a = &u->apppw[j];
+      fprintf(f, "apppw\t%s\t%s\t%s\t%s\t%s\t%lld\t%lld\n", u->name, a->id, a->label,
+              a->salt, a->hash, a->created, a->used);
+    }
   }
   for(int i=0; i<g_nlinks; i++) {
     link_t *l = &g_links[i];
@@ -919,6 +950,12 @@ cfg_upsert_user(const user_t *in, const char *newpass, char *err, size_t errlen)
 
   memcpy(&tmp, in, sizeof(tmp));
   tmp.ksalt[0] = tmp.kwrap[0] = tmp.pwenc[0] = 0;
+  /* La verificación en dos pasos y las contraseñas de aplicación solo se
+     cambian con sus funciones propias: aquí se conservan las que hubiera. */
+  tmp.totp[0] = 0;
+  tmp.totp_since = 0;
+  tmp.totp_last = 0;
+  tmp.nrcodes = tmp.napppw = 0;
   for(int i=0; i<tmp.nmounts; i++) {
     if(tmp.mounts[i].enc) tmp.mounts[i].rw = 1;
   }
@@ -981,6 +1018,13 @@ cfg_upsert_user(const user_t *in, const char *newpass, char *err, size_t errlen)
       LOG_PRINTF("ps5share: el administrador cambió la contraseña de '%s'; "
                  "sus archivos cifrados anteriores ya no se pueden abrir\n", u->name);
     }
+    memcpy(tmp.totp, u->totp, sizeof(tmp.totp));
+    tmp.totp_since = u->totp_since;
+    tmp.totp_last = u->totp_last;
+    tmp.nrcodes = u->nrcodes;
+    memcpy(tmp.rcodes, u->rcodes, sizeof(tmp.rcodes));
+    tmp.napppw = u->napppw;
+    memcpy(tmp.apppw, u->apppw, sizeof(tmp.apppw));
     memcpy(u, &tmp, sizeof(*u));
   }
 
@@ -1403,4 +1447,417 @@ cfg_valid_domain(const char *s) {
     if(c == '.' && s[i+1] == '.') return 0;
   }
   return 1;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Verificación en dos pasos y contraseñas de aplicación               */
+/* ------------------------------------------------------------------ */
+
+/* Sin 0/O ni 1/I/L para que no se confundan al copiarlos a mano. */
+static const char RC_ALPHA[] = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+
+static void
+sha256_hex(const char *a, const char *b, const char *c, char out[65]) {
+  uint8_t d[32];
+  SHA256_CTX x;
+  sha256_init(&x);
+  sha256_update(&x, (const uint8_t*)a, strlen(a));
+  sha256_update(&x, (const uint8_t*)"|", 1);
+  sha256_update(&x, (const uint8_t*)b, strlen(b));
+  sha256_update(&x, (const uint8_t*)"|", 1);
+  sha256_update(&x, (const uint8_t*)c, strlen(c));
+  sha256_final(&x, d);
+  to_hex(d, 32, out);
+  memset(d, 0, sizeof(d));
+}
+
+
+static void
+totp_aad(const char *name, char *aad, size_t n) {
+  snprintf(aad, n, "ps5nas-totp|%s", name);
+}
+
+
+/* Quita guiones y espacios y pasa a mayúsculas (o minúsculas). */
+static int
+normalize_code(const char *in, char *out, size_t outlen, int upper) {
+  size_t n = 0;
+  for(const char *p = in; *p; p++) {
+    if(*p == '-' || *p == ' ') continue;
+    if(n + 1 >= outlen) return -1;
+    char c = *p;
+    if(upper && c >= 'a' && c <= 'z') c = (char)(c - 32);
+    if(!upper && c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    out[n++] = c;
+  }
+  out[n] = 0;
+  return (int)n;
+}
+
+
+static void
+random_code(char *out, size_t len, int upper) {
+  uint8_t r[64];
+  size_t alen = sizeof(RC_ALPHA) - 1;
+  size_t n = 0;
+  while(n < len) {
+    cfg_random(r, sizeof(r));
+    for(size_t i=0; i<sizeof(r) && n < len; i++) {
+      if(r[i] >= 256 - (256 % alen)) continue;   /* sin sesgo */
+      char c = RC_ALPHA[r[i] % alen];
+      out[n++] = (!upper && c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+  }
+  out[len] = 0;
+  memset(r, 0, sizeof(r));
+}
+
+
+static void
+rcode_hash(const char *name, const char *code, char out[33]) {
+  char h[65];
+  sha256_hex("ps5nas-rc", name, code, h);
+  memcpy(out, h, 32);
+  out[32] = 0;
+}
+
+
+/* Genera los códigos de recuperación de U (con el lock tomado). */
+static void
+new_codes_locked(user_t *u, char codes[CFG_RCODES][CFG_RCODE_LEN+2]) {
+  for(int i=0; i<CFG_RCODES; i++) {
+    char c[CFG_RCODE_LEN + 1];
+    random_code(c, CFG_RCODE_LEN, 1);
+    rcode_hash(u->name, c, u->rcodes[i]);
+    snprintf(codes[i], CFG_RCODE_LEN + 2, "%.4s-%s", c, c + 4);
+    memset(c, 0, sizeof(c));
+  }
+  u->nrcodes = CFG_RCODES;
+}
+
+
+int
+cfg_totp_enabled(const user_t *u) {
+  return u && u->totp[0];
+}
+
+
+void
+cfg_totp_tag(const user_t *u, char out[17]) {
+  char h[65];
+  sha256_hex("ps5nas-tag", u->name, u->totp, h);
+  memcpy(out, h, 16);
+  out[16] = 0;
+}
+
+
+int
+cfg_totp_enable(const char *name, const uint8_t *key, uint64_t step,
+                char codes[CFG_RCODES][CFG_RCODE_LEN+2], char *err, size_t errlen) {
+  char b32[TOTP_B32_LEN + 1], aad[CFG_NAME_MAX + 16], sealed[CRYPT_SEAL_HEX + 1];
+  int r = -1;
+  if(!g_master_ok) {
+    snprintf(err, errlen, "La consola no tiene clave maestra: no se puede guardar el secreto");
+    return -1;
+  }
+  base32_encode(key, TOTP_SECRET_LEN, b32, sizeof(b32));
+  totp_aad(name, aad, sizeof(aad));
+  int sr = crypt_seal(g_master, aad, b32, strlen(b32), sealed, sizeof(sealed));
+  memset(b32, 0, sizeof(b32));
+  if(sr) {
+    snprintf(err, errlen, "No se pudo cifrar el secreto");
+    return -1;
+  }
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u) {
+    snprintf(err, errlen, "No existe el usuario");
+  } else {
+    memcpy(u->totp, sealed, sizeof(u->totp));
+    u->totp_since = (long long)time(NULL);
+    u->totp_last = step;   /* el código con el que se activó ya no vale */
+    new_codes_locked(u, codes);
+    if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+    else r = 0;
+  }
+  cfg_unlock();
+  return r;
+}
+
+
+int
+cfg_totp_disable(const char *name, char *err, size_t errlen) {
+  int r = -1;
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u) {
+    snprintf(err, errlen, "No existe el usuario");
+  } else {
+    memset(u->totp, 0, sizeof(u->totp));
+    memset(u->rcodes, 0, sizeof(u->rcodes));
+    u->totp_since = 0;
+    u->totp_last = 0;
+    u->nrcodes = 0;
+    if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+    else r = 0;
+  }
+  cfg_unlock();
+  return r;
+}
+
+
+int
+cfg_totp_new_codes(const char *name, char codes[CFG_RCODES][CFG_RCODE_LEN+2],
+                   char *err, size_t errlen) {
+  int r = -1;
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u || !u->totp[0]) {
+    snprintf(err, errlen, "La verificación en dos pasos no está activada");
+  } else {
+    new_codes_locked(u, codes);
+    if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+    else r = 0;
+  }
+  cfg_unlock();
+  return r;
+}
+
+
+/* Fallos de código por usuario (además del límite por IP): 5 seguidos
+   bloquean la verificación de esa cuenta 15 minutos. */
+#define TOTP_MAX_FAILS 5
+#define TOTP_LOCK_SECS 900
+static struct { char name[CFG_NAME_MAX + 1]; int fails; time_t first; } g_tfail[CFG_MAX_USERS];
+
+
+static int
+tfail_slot_locked(const char *name) {
+  int free_i = -1;
+  for(int i=0; i<CFG_MAX_USERS; i++) {
+    if(!strcmp(g_tfail[i].name, name)) return i;
+    if(free_i < 0 && (!g_tfail[i].name[0] || time(NULL) - g_tfail[i].first > TOTP_LOCK_SECS)) free_i = i;
+  }
+  if(free_i < 0) free_i = 0;
+  memset(&g_tfail[free_i], 0, sizeof(g_tfail[0]));
+  snprintf(g_tfail[free_i].name, sizeof(g_tfail[0].name), "%s", name);
+  return free_i;
+}
+
+
+int
+cfg_totp_locked_out(const char *name) {
+  int r = 0;
+  cfg_lock();
+  for(int i=0; i<CFG_MAX_USERS; i++) {
+    if(!strcmp(g_tfail[i].name, name) && g_tfail[i].fails >= TOTP_MAX_FAILS &&
+       time(NULL) - g_tfail[i].first < TOTP_LOCK_SECS) r = 1;
+  }
+  cfg_unlock();
+  return r;
+}
+
+
+int
+cfg_totp_check(const char *name, const char *code, int allow_recovery, int *used_recovery) {
+  char sealed[CRYPT_SEAL_HEX + 1], aad[CFG_NAME_MAX + 16], b32[CRYPT_SEAL_MAX + 1];
+  uint8_t key[TOTP_SECRET_LEN + 8];
+  uint64_t last;
+  int r = -1;
+
+  if(used_recovery) *used_recovery = 0;
+  if(!code || !code[0] || strlen(code) > 32) return -1;
+
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u || !u->totp[0]) {
+    cfg_unlock();
+    return -1;
+  }
+  memcpy(sealed, u->totp, sizeof(sealed));
+  last = u->totp_last;
+  cfg_unlock();
+  if(cfg_totp_locked_out(name)) return -2;
+
+  totp_aad(name, aad, sizeof(aad));
+  if(!g_master_ok || crypt_open(g_master, aad, sealed, b32, sizeof(b32))) return -1;
+  int kl = base32_decode(b32, key, sizeof(key));
+  memset(b32, 0, sizeof(b32));
+  if(kl <= 0) return -1;
+
+  uint64_t step = totp_verify(key, (size_t)kl, code, (uint64_t)time(NULL), last);
+  memset(key, 0, sizeof(key));
+
+  cfg_lock();
+  u = cfg_find_user_locked(name);
+  if(!u || strcmp(u->totp, sealed)) {
+    r = -1;
+  } else if(step) {
+    if(step > u->totp_last) {
+      u->totp_last = step;
+      r = 0;
+    }
+  } else if(allow_recovery) {
+    char norm[CFG_RCODE_LEN + 4], h[33];
+    if(normalize_code(code, norm, sizeof(norm), 1) == CFG_RCODE_LEN) {
+      rcode_hash(name, norm, h);
+      for(int i=0; i<u->nrcodes; i++) {
+        if(!cfg_consttime_eq(h, u->rcodes[i])) continue;
+        memmove(u->rcodes[i], u->rcodes[i+1], (size_t)(u->nrcodes - i - 1) * sizeof(u->rcodes[0]));
+        u->nrcodes--;
+        memset(u->rcodes[u->nrcodes], 0, sizeof(u->rcodes[0]));
+        cfg_save_locked();
+        if(used_recovery) *used_recovery = 1;
+        r = 0;
+        break;
+      }
+    }
+  }
+  if(u) {
+    int t = tfail_slot_locked(name);
+    if(r) {
+      if(time(NULL) - g_tfail[t].first > TOTP_LOCK_SECS) {
+        g_tfail[t].fails = 0;
+        g_tfail[t].first = time(NULL);
+      }
+      g_tfail[t].fails++;
+    } else {
+      memset(&g_tfail[t], 0, sizeof(g_tfail[0]));
+    }
+  }
+  cfg_unlock();
+  return r;
+}
+
+
+static int
+valid_label(const char *s) {
+  size_t n = strlen(s);
+  if(!n || n > CFG_APPPW_LABEL) return 0;
+  for(const char *p = s; *p; p++) {
+    if((unsigned char)*p < 0x20 || *p == 0x7f) return 0;
+  }
+  return 1;
+}
+
+
+int
+cfg_apppw_add(const char *name, const char *label, char pass_out[CFG_APPPW_LEN+4],
+              char id_out[9], char *err, size_t errlen) {
+  char pass[CFG_APPPW_LEN + 1];
+  apppw_t a;
+  int r = -1;
+
+  if(!valid_label(label)) {
+    snprintf(err, errlen, "Pon un nombre para identificarla (máx. %d caracteres)", CFG_APPPW_LABEL);
+    return -1;
+  }
+  memset(&a, 0, sizeof(a));
+  cfg_random_hex(a.id, 4);
+  cfg_random_hex(a.salt, 8);
+  snprintf(a.label, sizeof(a.label), "%s", label);
+  random_code(pass, CFG_APPPW_LEN, 0);
+  sha256_hex("ps5nas-app", a.salt, pass, a.hash);
+  a.created = (long long)time(NULL);
+
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u) {
+    snprintf(err, errlen, "No existe el usuario");
+  } else if(u->napppw >= CFG_MAX_APPPW) {
+    snprintf(err, errlen, "Ya tienes %d contraseñas de aplicación: borra alguna que no uses", CFG_MAX_APPPW);
+  } else {
+    memcpy(&u->apppw[u->napppw++], &a, sizeof(a));
+    if(cfg_save_locked()) {
+      u->napppw--;
+      snprintf(err, errlen, "No se pudo guardar la configuración");
+    } else {
+      r = 0;
+    }
+  }
+  cfg_unlock();
+  if(!r) {
+    snprintf(pass_out, CFG_APPPW_LEN + 4, "%.4s-%.4s-%.4s-%.4s", pass, pass + 4, pass + 8, pass + 12);
+    memcpy(id_out, a.id, 9);
+  }
+  memset(pass, 0, sizeof(pass));
+  return r;
+}
+
+
+int
+cfg_apppw_delete(const char *name, const char *id, char *err, size_t errlen) {
+  int r = -1;
+  cfg_lock();
+  user_t *u = cfg_find_user_locked(name);
+  if(!u) {
+    snprintf(err, errlen, "No existe el usuario");
+    goto out;
+  }
+  for(int i=0; i<u->napppw; i++) {
+    if(strcmp(u->apppw[i].id, id)) continue;
+    memmove(&u->apppw[i], &u->apppw[i+1], (size_t)(u->napppw - i - 1) * sizeof(apppw_t));
+    u->napppw--;
+    memset(&u->apppw[u->napppw], 0, sizeof(apppw_t));
+    if(cfg_save_locked()) snprintf(err, errlen, "No se pudo guardar la configuración");
+    else r = 0;
+    goto out;
+  }
+  snprintf(err, errlen, "Esa contraseña de aplicación ya no existe");
+ out:
+  cfg_unlock();
+  return r;
+}
+
+
+int
+cfg_authenticate_service(const char *name, const char *pass, user_t *out, int *via_app) {
+  user_t u;
+  char norm[CFG_APPPW_LEN + 8];
+  int match = -1;
+
+  if(via_app) *via_app = 0;
+  if(cfg_get_user(name, &u)) {
+    cfg_authenticate(name, pass, NULL);   /* mismo tiempo que si existiera */
+    return -1;
+  }
+  if(u.enabled && normalize_code(pass, norm, sizeof(norm), 0) == CFG_APPPW_LEN) {
+    for(int i=0; i<u.napppw; i++) {
+      char h[65];
+      sha256_hex("ps5nas-app", u.apppw[i].salt, norm, h);
+      if(cfg_consttime_eq(h, u.apppw[i].hash)) match = i;
+    }
+  }
+  memset(norm, 0, sizeof(norm));
+
+  if(match >= 0) {
+    long long now = (long long)time(NULL);
+    if(now - u.apppw[match].used > 3600) {
+      /* La última vez que se usó (como mucho una escritura por hora). */
+      cfg_lock();
+      user_t *p = cfg_find_user_locked(name);
+      for(int i=0; p && i<p->napppw; i++) {
+        if(!strcmp(p->apppw[i].id, u.apppw[match].id)) {
+          p->apppw[i].used = now;
+          cfg_save_locked();
+        }
+      }
+      cfg_unlock();
+    }
+    if(out) memcpy(out, &u, sizeof(u));
+    if(via_app) *via_app = 1;
+    memset(&u, 0, sizeof(u));
+    return 0;
+  }
+  if(u.totp[0]) {
+    /* Con la verificación en dos pasos la contraseña normal no vale aquí. */
+    char tmp[CFG_HASH_HEX + 1];
+    hash_password(u.salt, pass, tmp);
+    memset(&u, 0, sizeof(u));
+    return -1;
+  }
+  memset(&u, 0, sizeof(u));
+  return cfg_authenticate(name, pass, out);
 }

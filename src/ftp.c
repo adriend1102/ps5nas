@@ -309,7 +309,7 @@ cmd_PASS(ftp_env_t *env, const char *arg) {
   if(!env->pending_user[0]) {
     return reply(env, "503 Envía USER primero\r\n");
   }
-  if(cfg_authenticate(env->pending_user, arg, &env->user)) {
+  if(cfg_authenticate_service(env->pending_user, arg, &env->user, NULL)) {
     env->fails++;
     LOG_PRINTF("ftp: login fallido de '%s' desde %s\n", env->pending_user, ip);
     sleep(2);

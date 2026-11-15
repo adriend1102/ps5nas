@@ -170,6 +170,36 @@ automático
 cada jailbreak. La PS5 no atiende conexiones en modo reposo: tiene que estar
 encendida.
 
+## Verificación en dos pasos (2FA) y contraseñas de aplicación
+
+Cada usuario puede activarla por su cuenta (también los administradores) en
+**Mi cuenta → Verificación en dos pasos**. Es opcional.
+
+1. Escribe tu contraseña y pulsa **Activar**.
+2. Escanea el QR con una app de autenticación (Google Authenticator,
+   Microsoft Authenticator, Aegis, 2FAS…). En el móvil puedes pulsar
+   «Ábrelo directamente en la app».
+3. Escribe el código de 6 dígitos y guarda los **10 códigos de recuperación**
+   (cada uno sirve una vez si pierdes el móvil).
+
+Con la verificación activada:
+
+| Dónde | Qué pide |
+|---|---|
+| Web de PS5NAS (casa o internet) y apps publicadas | Contraseña + código de 6 dígitos (o de recuperación) |
+| Apps de Bitwarden (móvil, extensión, escritorio, `bw`) | Contraseña maestra + código. Puedes marcar «Recordarme» 30 días en ese dispositivo |
+| SFTP y FTP (Samsung *Mis archivos*, WinSCP, unidad en Windows/Linux…) | Una **contraseña de aplicación**, no la normal |
+
+**Contraseñas de aplicación.** En *Mi cuenta* crea una por dispositivo
+(«Móvil Samsung», «PC Windows»…). Son largas y aleatorias, solo valen para
+SFTP/FTP y se ven una sola vez: pégala en el campo *contraseña* del
+programa como si fuera la normal. Si pierdes un dispositivo, borra solo la
+suya. Las carpetas privadas cifradas funcionan igual con ellas.
+
+**Si pierdes el móvil y los códigos**, otro administrador puede quitártela
+en **Usuarios → (tu usuario) → Quitársela**. Tras 5 códigos erróneos
+seguidos la cuenta espera 15 minutos.
+
 ## Recuperar contraseñas
 
 En la pantalla de inicio de sesión hay **«¿Olvidaste tu contraseña?»**, con

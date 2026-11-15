@@ -726,7 +726,7 @@ h_pw_export(req_t *r) {
   char pass[256];
   cJSON *v;
   uint8_t key[64];
-  uint32_t ip = r->peer.sin_addr.s_addr;
+  uint32_t ip = req_ip(r);
   if(read_body(r)) return send_err(r, 400, "Petición no válida");
   if(rl_blocked(ip)) return send_err(r, 429, "Demasiados intentos. Espera unos minutos.");
   get_param(r->body, "pass", pass, sizeof(pass));

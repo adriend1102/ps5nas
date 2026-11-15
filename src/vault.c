@@ -644,7 +644,13 @@ profile_json(const cJSON *v) {
   jset(p, "premium", cJSON_CreateTrue());
   jset(p, "premiumFromOrganization", cJSON_CreateFalse());
   jset_str(p, "culture", "es-ES");
-  jset(p, "twoFactorEnabled", cJSON_CreateFalse());
+  {
+    user_t pu;
+    const char *pn = jstr(v, "name");
+    int on = pn && !cfg_get_user(pn, &pu) && cfg_totp_enabled(&pu);
+    memset(&pu, 0, sizeof(pu));
+    jset(p, "twoFactorEnabled", on ? cJSON_CreateTrue() : cJSON_CreateFalse());
+  }
   jset_str(p, "key", jstr(v, "key"));
   jset_str(p, "privateKey", jstr(v, "priv"));
   jset_str(p, "securityStamp", jstr(v, "sstamp"));
@@ -919,7 +925,7 @@ make_access_token(const cJSON *v, const char *user, const char *device, const ch
 static int
 h_token(req_t *r) {
   char grant[32], email[256], hash[128], device[128], dname[128], dtype[16], client[32];
-  uint32_t ip = r->peer.sin_addr.s_addr;
+  uint32_t ip = req_ip(r);
   user_t u;
 
   if(read_body_max(r, HTTP_BODY_MAX)) return bw_grant_fail(r, "Petición no válida");
@@ -997,13 +1003,74 @@ h_token(req_t *r) {
     vault_unlock();
     return bw_grant_fail(r, why);
   }
-  rl_clear(ip);
 
   /* Dispositivo y token de refresco. */
   char devid[128], rt[CFG_NAME_MAX + 72], rhex[65], th[65];
   uint8_t rnd[32], d[32];
   if(device[0]) snprintf(devid, sizeof(devid), "%s", device);
   else bw_uuid(devid);
+
+  /* Verificación en dos pasos (proveedor 0 = app de autenticación,
+     5 = «recordar este dispositivo»). */
+  char tf_new[65] = "";   /* token de «recordar» que se devuelve */
+  char tf_tag[17] = "";
+  if(cfg_totp_enabled(&u)) {
+    char tft[128], tfp[8], tfr[8];
+    get_param(r->body, "twoFactorToken", tft, sizeof(tft));
+    get_param(r->body, "twoFactorProvider", tfp, sizeof(tfp));
+    get_param(r->body, "twoFactorRemember", tfr, sizeof(tfr));
+    cfg_totp_tag(&u, tf_tag);
+    int ok = 0;
+    if(tft[0] && !strcmp(tfp, "5")) {
+      /* Token de un dispositivo recordado: vale si es de este mismo
+         dispositivo, no ha caducado y el secreto no ha cambiado. */
+      cJSON *dv = vault_find_id(cJSON_GetObjectItem(v, "devices"), devid);
+      const char *h = dv ? jstr(dv, "tfh") : NULL;
+      const char *g = dv ? jstr(dv, "tfg") : NULL;
+      char hh[65];
+      bw_sha256(tft, strlen(tft), d);
+      to_hex(d, 32, hh);
+      if(h && g && strlen(h) == 64 && bw_consttime_eq(h, hh, 64) && !strcmp(g, tf_tag) &&
+         jnum(dv, "tfe", 0) > (double)time(NULL)) ok = 1;
+    } else if(tft[0]) {
+      int cr = cfg_totp_check(u.name, tft, 1, NULL);
+      if(cr) {
+        cJSON_Delete(v);
+        vault_unlock();
+        if(cr != -2) {
+          rl_fail(ip);
+          sleep(1);
+        }
+        return bw_grant_fail(r, cr == -2 ? "Demasiados códigos incorrectos. Espera 15 minutos."
+                                         : "El código de verificación no es correcto");
+      }
+      ok = 1;
+      if(!strcmp(tfr, "1") || !strcasecmp(tfr, "true")) {
+        uint8_t rr[32];
+        bw_random(rr, sizeof(rr));
+        to_hex(rr, sizeof(rr), tf_new);
+      }
+    }
+    if(!ok) {
+      cJSON_Delete(v);
+      vault_unlock();
+      memset(&u, 0, sizeof(u));
+      cJSON *j = cJSON_CreateObject();
+      jset_str(j, "error", "invalid_grant");
+      jset_str(j, "error_description", "Two factor required.");
+      cJSON *tp = cJSON_CreateArray();
+      cJSON_AddItemToArray(tp, cJSON_CreateString("0"));
+      jset(j, "TwoFactorProviders", tp);
+      cJSON *tp2 = cJSON_CreateObject();
+      jset(tp2, "0", cJSON_CreateNull());
+      jset(j, "TwoFactorProviders2", tp2);
+      cJSON *mpp = cJSON_CreateObject();
+      jset_str(mpp, "Object", "masterPasswordPolicy");
+      jset(j, "MasterPasswordPolicy", mpp);
+      return bw_send(r, 400, j);
+    }
+  }
+  rl_clear(ip);
   bw_random(rnd, sizeof(rnd));
   to_hex(rnd, sizeof(rnd), rhex);
   snprintf(rt, sizeof(rt), "%s.%s", u.name, rhex);
@@ -1034,6 +1101,17 @@ h_token(req_t *r) {
   jset_num(dev, "type", atoi(dtype));
   jset_str(dev, "rt", th);
   jset_num(dev, "used", (double)bw_now_us());
+  if(tf_new[0]) {
+    char hh[65];
+    bw_sha256(tf_new, strlen(tf_new), d);
+    to_hex(d, 32, hh);
+    cJSON_DeleteItemFromObject(dev, "tfh");
+    cJSON_DeleteItemFromObject(dev, "tfg");
+    cJSON_DeleteItemFromObject(dev, "tfe");
+    jset_str(dev, "tfh", hh);
+    jset_str(dev, "tfg", tf_tag);
+    jset_num(dev, "tfe", (double)(time(NULL) + 30 * 24 * 3600));
+  }
   if(vault_save(u.name, v)) {
     cJSON_Delete(v);
     vault_unlock();
@@ -1046,6 +1124,7 @@ h_token(req_t *r) {
   jset_num(j, "expires_in", ACCESS_TTL);
   jset_str(j, "token_type", "Bearer");
   jset_str(j, "refresh_token", rt);
+  if(tf_new[0]) jset_str(j, "TwoFactorToken", tf_new);
   jset_str(j, "Key", jstr(v, "key"));
   jset_str(j, "PrivateKey", jstr(v, "priv"));
   jset_num(j, "Kdf", 0);

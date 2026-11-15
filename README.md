@@ -6,7 +6,7 @@
 
 **Convierte tu PS5 con jailbreak en un NAS multiusuario: SFTP, web, carpetas privadas cifradas y gestor de contraseñas compatible con Bitwarden, sin ningún PC encendido.**
 
-![Versión](https://img.shields.io/badge/versión-0.9.0-2156d6)
+![Versión](https://img.shields.io/badge/versión-0.10.0-2156d6)
 ![Plataforma](https://img.shields.io/badge/PS5-firmware%2013.x-0b0d12?logo=playstation)
 ![Licencia](https://img.shields.io/badge/licencia-GPLv3-1f8a4c)
 ![Pruebas](https://img.shields.io/badge/pruebas-238%20OK-1f8a4c)
@@ -25,6 +25,7 @@
 | 🔒 **Carpetas privadas cifradas** | Nombres y contenido cifrados en el disco (AES‑256‑GCM). El usuario no configura nada. |
 | 🗝️ **Gestor de contraseñas** | Tu propio «Bitwarden» en la PS5: pestaña *Contraseñas* en la web y apps oficiales de Bitwarden (móvil con autorrelleno, extensión de navegador, escritorio). Importa el CSV de Google/Chrome/Firefox. |
 | 🔏 **HTTPS propio** | La PS5 crea su certificado (IP de casa y de Tailscale); lo instalas una vez en cada dispositivo. |
+| 🛡️ **Verificación en dos pasos** | Opcional para cada usuario: código de Google Authenticator, Aegis… en la web, las apps publicadas y Bitwarden. Contraseñas de aplicación para SFTP/FTP (Samsung, Windows, Linux). |
 | 🔑 **Recuperar contraseñas** | Por correo (Gmail/SMTP con TLS) o pidiéndosela al administrador, que la acepta desde el panel. |
 | 🧩 **Apps** | Pestaña con accesos directos a las otras webs de la consola (Machete IA, Tailscale…). El admin decide quién ve cada una. |
 | 🌐 **Desde internet sin VPN** | Con un servidor gratis (Oracle Cloud) y DuckDNS: HTTPS de verdad y cada app en su propio subdominio tras iniciar sesión en PS5NAS. |

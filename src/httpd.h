@@ -90,6 +90,9 @@ int  send_json(req_t *r, int code, sb_t *b, const char *extra);
 int  send_err(req_t *r, int code, const char *msg);
 int  send_ok(req_t *r);
 
+/* IP real del cliente (la de la pasarela si se entra desde internet). */
+uint32_t req_ip(const req_t *r);
+
 /* Límite de intentos de inicio de sesión por IP. */
 int  rl_blocked(uint32_t ip);
 void rl_fail(uint32_t ip);

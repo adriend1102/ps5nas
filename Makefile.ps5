@@ -22,7 +22,7 @@ CFLAGS := -Wall -Werror -O2 -DVERSION_TAG=\"$(VERSION_TAG)\" -Isrc \
           -DWOLFSSL_USER_SETTINGS -I$(WOLF_DIR) -I$(WOLF_DIR)/wolfssl -I$(WOLF_DIR)/wolfssh -I$(WOLF_DIR)/cjson
 
 SOURCE := src/app.c src/config.c src/vfs.c src/crypt.c src/ftp.c src/http.c src/sftp.c src/io.c src/smtp.c src/tsip.c src/tls.c src/bwcrypto.c src/vault.c src/vaultweb.c
-SOURCE += src/sha256.c src/notify.c src/main-prospero.c src/ps5compat.c
+SOURCE += src/sha256.c src/totp.c src/notify.c src/main-prospero.c src/ps5compat.c
 
 WOLF_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(WOLF_SRC))
 

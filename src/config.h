@@ -24,6 +24,11 @@ later version.  See LICENSE.  */
 #define CFG_PBKDF2_ITER 20000
 #define CFG_PASS_MAX    128   /* longitud máxima de una contraseña */
 #define CFG_EMAIL_MAX   127
+#define CFG_RCODES      10    /* códigos de recuperación de la verificación en dos pasos */
+#define CFG_RCODE_LEN   8     /* caracteres de cada código (se muestran como XXXX-XXXX) */
+#define CFG_MAX_APPPW   8     /* contraseñas de aplicación (SFTP/FTP) por usuario */
+#define CFG_APPPW_LEN   16    /* caracteres (se muestran como xxxx-xxxx-xxxx-xxxx) */
+#define CFG_APPPW_LABEL 40
 
 
 typedef struct mount {
@@ -32,6 +37,17 @@ typedef struct mount {
   int  rw;                    /* 0 = solo lectura, 1 = lectura/escritura */
   int  enc;                   /* carpeta privada cifrada (implica rw) */
 } mount_t;
+
+
+/* Contraseña de aplicación: solo vale para SFTP/FTP.  Se guarda su hash. */
+typedef struct apppw {
+  char      id[9];
+  char      label[CFG_APPPW_LABEL+1];
+  char      salt[17];
+  char      hash[65];
+  long long created;
+  long long used;
+} apppw_t;
 
 
 typedef struct user {
@@ -47,6 +63,14 @@ typedef struct user {
   char pwenc[CRYPT_SEAL_HEX+1]; /* contraseña cifrada con la clave maestra (vacía = no se conoce) */
   char email[CFG_EMAIL_MAX+1];  /* correo de recuperación */
   int  vault;                   /* puede usar el gestor de contraseñas */
+  /* Verificación en dos pasos (vacía = desactivada) */
+  char totp[CRYPT_SEAL_HEX+1];  /* secreto TOTP sellado con la clave maestra */
+  long long totp_since;
+  uint64_t  totp_last;          /* último paso aceptado (solo en memoria) */
+  int  nrcodes;
+  char rcodes[CFG_RCODES][33];  /* hash de los códigos de recuperación sin usar */
+  int  napppw;
+  apppw_t apppw[CFG_MAX_APPPW];
   int  nmounts;
   mount_t mounts[CFG_MAX_MOUNTS];
 } user_t;
@@ -144,6 +168,32 @@ int  cfg_change_own_password(const char *name, const char *oldpass, const char *
                              char *err, size_t errlen);
 int  cfg_delete_user(const char *name, char *err, size_t errlen);
 int  cfg_update_settings(const settings_t *s, char *err, size_t errlen);
+
+/* Como cfg_authenticate, para SFTP y FTP: acepta las contraseñas de
+   aplicación y, si el usuario tiene la verificación en dos pasos, SOLO
+   esas.  *VIA_APP queda a 1 si entró con una contraseña de aplicación. */
+int  cfg_authenticate_service(const char *name, const char *pass, user_t *out, int *via_app);
+
+/* Verificación en dos pasos. */
+int  cfg_totp_enabled(const user_t *u);
+/* Activa el secreto KEY (20 bytes) y genera códigos de recuperación
+   (CODES[i] = "XXXX-XXXX"). */
+int  cfg_totp_enable(const char *name, const uint8_t *key, uint64_t step,
+                     char codes[CFG_RCODES][CFG_RCODE_LEN+2], char *err, size_t errlen);
+int  cfg_totp_disable(const char *name, char *err, size_t errlen);
+/* Comprueba un código de 6 dígitos o, si ALLOW_RECOVERY, un código de
+   recuperación (que se gasta).  0 si vale; *USED_RECOVERY a 1 si fue uno de esos. */
+int  cfg_totp_check(const char *name, const char *code, int allow_recovery, int *used_recovery);
+/* Demasiados códigos erróneos seguidos: la cuenta espera 15 minutos (-2 en cfg_totp_check). */
+int  cfg_totp_locked_out(const char *name);
+int  cfg_totp_new_codes(const char *name, char codes[CFG_RCODES][CFG_RCODE_LEN+2],
+                        char *err, size_t errlen);
+/* Huella corta del secreto actual (para invalidar «recordar dispositivo»). */
+void cfg_totp_tag(const user_t *u, char out[17]);
+/* Contraseñas de aplicación. */
+int  cfg_apppw_add(const char *name, const char *label, char pass_out[CFG_APPPW_LEN+4],
+                   char id_out[9], char *err, size_t errlen);
+int  cfg_apppw_delete(const char *name, const char *id, char *err, size_t errlen);
 
 /* Validaciones de nombres. */
 int  cfg_valid_username(const char *s);

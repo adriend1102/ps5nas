@@ -266,6 +266,59 @@ check(s == 200 and len(sync["ciphers"]) == 4, "todo sigue ahí tras moverla")
 raw = open(os.path.join(newdir, "Vera.json")).read()
 check("desde-web" not in raw and "GitHub" not in raw, "en el disco solo hay datos cifrados")
 
+print("== Verificación en dos pasos en las apps de Bitwarden")
+import struct, time as _t
+def totp(secret, step):
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+    d = hmac.new(key, struct.pack(">Q", step), hashlib.sha1).digest()
+    o = d[-1] & 15
+    return "%06d" % ((struct.unpack(">I", d[o:o+4])[0] & 0x7fffffff) % 1000000)
+def login2(email, pw, dev="99999999-2222-3333-4444-555555555555", **extra):
+    s, pre = bw("POST", "/identity/accounts/prelogin", {"email": email})
+    mk = master_key(pw, email, pre["kdfIterations"])
+    h = base64.b64encode(hashlib.pbkdf2_hmac("sha256", mk, pw.encode(), 1)).decode()
+    d = {"grant_type": "password", "username": email, "password": h, "scope": "api offline_access",
+         "client_id": "mobile", "deviceType": "0", "deviceIdentifier": dev, "deviceName": "android"}
+    d.update(extra)
+    return bw("POST", "/identity/connect/token", d, form=True)
+admin.req("POST", "/api/admin/user", {"name": "tom", "password": "tompass11", "admin": "0",
+                                      "enabled": "1", "can_chpass": "1", "vault": "1", "mounts": ""})
+tom = Web()
+tom.req("POST", "/api/login", {"user": "tom", "pass": "tompass11"})
+s, tok = login2("tom@ps5nas.local", "tompass11")
+check(s == 200 and "access_token" in tok, "sin 2FA, la app entra solo con la contraseña")
+s, j = tom.req("POST", "/api/me/2fa/setup", {"pass": "tompass11"})
+secret = j["secret"]
+step = int(_t.time()) // 30
+s, j = tom.req("POST", "/api/me/2fa/enable", {"code": totp(secret, step)})
+check(s == 200, "tom activa la 2FA")
+s, tok = login2("tom@ps5nas.local", "tompass11")
+check(s == 400 and tok.get("TwoFactorProviders") == ["0"] and "0" in tok.get("TwoFactorProviders2", {})
+      and "access_token" not in tok, "la app recibe «Two factor required» con la app de autenticación")
+s, tok = login2("tom@ps5nas.local", "tompass11", twoFactorToken="000001", twoFactorProvider="0")
+check(s == 400 and "access_token" not in tok, "código erróneo rechazado")
+s, tok = login2("tom@ps5nas.local", "tompass11", twoFactorToken=totp(secret, step + 1), twoFactorProvider="0",
+                twoFactorRemember="1")
+check(s == 200 and "access_token" in tok and len(tok.get("TwoFactorToken", "")) == 64,
+      "con el código entra y recibe el token de «recordar dispositivo»")
+rem = tok.get("TwoFactorToken", "")
+s, tok = login2("tom@ps5nas.local", "tompass11", twoFactorToken=rem, twoFactorProvider="5")
+check(s == 200 and "access_token" in tok, "el dispositivo recordado entra sin código")
+s, tok = login2("tom@ps5nas.local", "tompass11", dev="00000000-0000-0000-0000-000000000001",
+                twoFactorToken=rem, twoFactorProvider="5")
+check(s == 400 and "TwoFactorProviders" in tok, "el token recordado no vale en otro dispositivo")
+s, prof = bw("GET", "/api/accounts/profile", token=login2("tom@ps5nas.local", "tompass11", twoFactorToken=rem,
+                                                          twoFactorProvider="5")[1]["access_token"])
+check(s == 200 and prof["twoFactorEnabled"] is True, "el perfil indica 2FA activada")
+admin.req("POST", "/api/admin/user/2fa/reset", {"name": "tom"})
+s, j = tom.req("POST", "/api/me/2fa/setup", {"pass": "tompass11"})
+secret2 = j["secret"]
+step = int(_t.time()) // 30
+tom.req("POST", "/api/me/2fa/enable", {"code": totp(secret2, step)})
+s, tok = login2("tom@ps5nas.local", "tompass11", twoFactorToken=rem, twoFactorProvider="5")
+check(s == 400 and "TwoFactorProviders" in tok, "al cambiar el secreto, los dispositivos recordados vuelven a pedir código")
+admin.req("POST", "/api/admin/user/delete", {"name": "tom"})
+
 # ---------------------------------------------------------------- CLI oficial (opcional)
 cli = os.environ.get("BW_CLI")
 if cli:
@@ -292,6 +345,22 @@ if cli:
     s, j = vera.req("GET", "/api/pw/items")
     check(any(i["name"] == "Desde bw" and i["login"]["password"] == "bw-pass" for i in j["items"]),
           "la web ve lo creado con bw")
+    # Verificación en dos pasos con la CLI oficial
+    admin.req("POST", "/api/admin/user", {"name": "cli2", "password": "cli2pass1", "admin": "0",
+                                          "enabled": "1", "can_chpass": "1", "vault": "1", "mounts": ""})
+    c2 = Web()
+    c2.req("POST", "/api/login", {"user": "cli2", "pass": "cli2pass1"})
+    s, j = c2.req("POST", "/api/me/2fa/setup", {"pass": "cli2pass1"})
+    sec = j["secret"]
+    stp = int(_t.time()) // 30
+    c2.req("POST", "/api/me/2fa/enable", {"code": totp(sec, stp)})
+    d2 = tempfile.mkdtemp()
+    env2 = dict(env, BITWARDENCLI_APPDATA_DIR=d2)
+    env2.pop("BW_SESSION", None)
+    run2 = lambda *a: subprocess.run([cli, *a], env=env2, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    run2("config", "server", API)
+    r = run2("login", "cli2@ps5nas.local", "cli2pass1", "--method", "0", "--code", totp(sec, stp + 1), "--raw")
+    check(r.returncode == 0 and r.stdout.strip(), "bw login con --method 0 --code " + (r.stderr or "").strip()[:120])
 
 print("\nRESULTADO:", "TODO OK" if not FAILS else f"{FAILS} FALLO(S)")
 sys.exit(1 if FAILS else 0)

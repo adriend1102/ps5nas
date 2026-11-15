@@ -37,6 +37,7 @@
 #include "sha256.h"
 #include "smtp.h"
 #include "tsip.h"
+#include "totp.h"
 #include "sftp.h"
 #include "io.h"
 #include "log.h"
@@ -321,7 +322,7 @@ req_https(const req_t *r) {
 
 /* IP del cliente: la real si llega por la pasarela, si no la del socket.
    (Por Tailscale todo llega como 127.0.0.1.)  Para IPv6 se usa un resumen. */
-static uint32_t
+uint32_t
 req_ip(const req_t *r) {
   if(r->via_gw && r->fwd_for[0]) {
     struct in_addr a;
@@ -871,11 +872,35 @@ h_login(req_t *r) {
   get_param(r->body, "pass", pass, sizeof(pass));
   get_param(r->body, "remember", rem, sizeof(rem));
 
-  if(cfg_authenticate(user, pass, NULL)) {
+  user_t au;
+  if(cfg_authenticate(user, pass, &au)) {
     rl_fail(ip);
     sleep(1);
     return send_err(r, 401, "Usuario o contraseña incorrectos");
   }
+  if(cfg_totp_enabled(&au)) {
+    /* Verificación en dos pasos: la contraseña es buena, falta el código. */
+    char code[40];
+    int used_rc = 0;
+    get_param(r->body, "code", code, sizeof(code));
+    memset(&au, 0, sizeof(au));
+    if(!code[0]) {
+      memset(pass, 0, sizeof(pass));
+      sb_t b = {0};
+      sb_puts(&b, "{\"need_2fa\":true}");
+      return send_json(r, 200, &b, NULL);
+    }
+    int cr = cfg_totp_check(user, code, 1, &used_rc);
+    if(cr) {
+      memset(pass, 0, sizeof(pass));
+      if(cr == -2) return send_err(r, 429, "Demasiados códigos incorrectos. Espera 15 minutos.");
+      rl_fail(ip);
+      sleep(1);
+      return send_err(r, 401, "El código de verificación no es correcto");
+    }
+    if(used_rc) LOG_PRINTF("ps5share: '%s' entró con un código de recuperación\n", user);
+  }
+  memset(&au, 0, sizeof(au));
   rl_clear(ip);
   ukey_t key;
   cfg_unlock_key(user, pass, &key);
@@ -916,6 +941,22 @@ h_me(req_t *r) {
   int vault_on = cfg_settings()->vault_enabled;
   cfg_unlock();
   sb_printf(&b, ",\"vault\":%s", (vault_on && r->user.vault) ? "true" : "false");
+  {
+    user_t cu;
+    if(cfg_get_user(r->user.name, &cu)) memset(&cu, 0, sizeof(cu));
+    sb_printf(&b, ",\"twofa\":%s,\"twofa_since\":%lld,\"rcodes\":%d,\"apppw\":[",
+              cfg_totp_enabled(&cu) ? "true" : "false", cu.totp_since, cu.nrcodes);
+    for(int i=0; i<cu.napppw; i++) {
+      if(i) sb_puts(&b, ",");
+      sb_puts(&b, "{\"id\":");
+      sb_json_str(&b, cu.apppw[i].id);
+      sb_puts(&b, ",\"label\":");
+      sb_json_str(&b, cu.apppw[i].label);
+      sb_printf(&b, ",\"created\":%lld,\"used\":%lld}", cu.apppw[i].created, cu.apppw[i].used);
+    }
+    sb_puts(&b, "]");
+    memset(&cu, 0, sizeof(cu));
+  }
   sb_printf(&b, ",\"admin\":%s,\"can_chpass\":%s,\"must_chpass\":%s,\"mounts\":[",
             r->user.admin ? "true" : "false",
             (r->user.can_chpass || r->user.must_chpass) ? "true" : "false",
@@ -977,6 +1018,224 @@ h_me_email(req_t *r) {
   }
   memset(pass, 0, sizeof(pass));
   if(cfg_set_email(r->user.name, email, err, sizeof(err))) return send_err(r, 400, err);
+  return send_ok(r);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Verificación en dos pasos y contraseñas de aplicación               */
+/* ------------------------------------------------------------------ */
+
+#define TFA_PENDING_TTL 900
+
+/* Secretos generados pero aún sin confirmar (solo en memoria). */
+static struct {
+  char    user[CFG_NAME_MAX + 1];
+  uint8_t key[TOTP_SECRET_LEN];
+  time_t  expires;
+} g_tfa_pending[8];
+static pthread_mutex_t g_tfa_lock = PTHREAD_MUTEX_INITIALIZER;
+
+
+/* Comprueba la contraseña actual del usuario de la sesión (con límite de intentos). */
+static int
+check_own_password(req_t *r, const char *pass) {
+  uint32_t ip = req_ip(r);
+  if(rl_blocked(ip)) {
+    send_err(r, 429, "Demasiados intentos. Espera unos minutos.");
+    return -1;
+  }
+  if(cfg_authenticate(r->user.name, pass, NULL)) {
+    rl_fail(ip);
+    sleep(1);
+    send_err(r, 403, "La contraseña no es correcta");
+    return -1;
+  }
+  return 0;
+}
+
+
+/* Comprueba la contraseña y el código de verificación (o de recuperación). */
+static int
+check_own_password_code(req_t *r) {
+  char pass[256], code[40];
+  get_param(r->body, "pass", pass, sizeof(pass));
+  get_param(r->body, "code", code, sizeof(code));
+  int pr = check_own_password(r, pass);
+  memset(pass, 0, sizeof(pass));
+  if(pr) return -1;
+  int cr = cfg_totp_check(r->user.name, code, 1, NULL);
+  if(cr == -2) {
+    send_err(r, 429, "Demasiados códigos incorrectos. Espera 15 minutos.");
+    return -1;
+  }
+  if(cr) {
+    rl_fail(req_ip(r));
+    sleep(1);
+    send_err(r, 403, "El código de verificación no es correcto");
+    return -1;
+  }
+  return 0;
+}
+
+
+static int
+send_codes(req_t *r, char codes[CFG_RCODES][CFG_RCODE_LEN+2]) {
+  sb_t b = {0};
+  sb_puts(&b, "{\"ok\":true,\"codes\":[");
+  for(int i=0; i<CFG_RCODES; i++) {
+    if(i) sb_puts(&b, ",");
+    sb_json_str(&b, codes[i]);
+  }
+  sb_puts(&b, "]}");
+  memset(codes, 0, sizeof(char) * CFG_RCODES * (CFG_RCODE_LEN + 2));
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_me_2fa_setup(req_t *r) {
+  char pass[256], b32[TOTP_B32_LEN + 1], uri[256];
+  uint8_t key[TOTP_SECRET_LEN];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(cfg_totp_enabled(&r->user)) return send_err(r, 400, "Ya tienes activada la verificación en dos pasos");
+  get_param(r->body, "pass", pass, sizeof(pass));
+  int pr = check_own_password(r, pass);
+  memset(pass, 0, sizeof(pass));
+  if(pr) return 0;
+
+  cfg_random(key, sizeof(key));
+  time_t now = time(NULL);
+  pthread_mutex_lock(&g_tfa_lock);
+  int slot = 0;
+  for(int i=0; i<(int)(sizeof(g_tfa_pending)/sizeof(g_tfa_pending[0])); i++) {
+    if(!strcmp(g_tfa_pending[i].user, r->user.name)) { slot = i; break; }
+    if(g_tfa_pending[i].expires < g_tfa_pending[slot].expires) slot = i;
+  }
+  snprintf(g_tfa_pending[slot].user, sizeof(g_tfa_pending[0].user), "%s", r->user.name);
+  memcpy(g_tfa_pending[slot].key, key, sizeof(key));
+  g_tfa_pending[slot].expires = now + TFA_PENDING_TTL;
+  pthread_mutex_unlock(&g_tfa_lock);
+
+  base32_encode(key, sizeof(key), b32, sizeof(b32));
+  memset(key, 0, sizeof(key));
+  snprintf(uri, sizeof(uri),
+           "otpauth://totp/PS5NAS:%s?secret=%s&issuer=PS5NAS&algorithm=SHA1&digits=%d&period=%d",
+           r->user.name, b32, TOTP_DIGITS, TOTP_PERIOD);
+  sb_t b = {0};
+  sb_puts(&b, "{\"secret\":");
+  sb_json_str(&b, b32);
+  sb_puts(&b, ",\"uri\":");
+  sb_json_str(&b, uri);
+  sb_puts(&b, "}");
+  memset(b32, 0, sizeof(b32));
+  memset(uri, 0, sizeof(uri));
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_me_2fa_enable(req_t *r) {
+  char code[40], err[256];
+  char codes[CFG_RCODES][CFG_RCODE_LEN + 2];
+  uint8_t key[TOTP_SECRET_LEN];
+  int have = 0;
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "code", code, sizeof(code));
+
+  pthread_mutex_lock(&g_tfa_lock);
+  for(int i=0; i<(int)(sizeof(g_tfa_pending)/sizeof(g_tfa_pending[0])); i++) {
+    if(!strcmp(g_tfa_pending[i].user, r->user.name) && g_tfa_pending[i].expires >= time(NULL)) {
+      memcpy(key, g_tfa_pending[i].key, sizeof(key));
+      have = 1;
+    }
+  }
+  pthread_mutex_unlock(&g_tfa_lock);
+  if(!have) return send_err(r, 400, "Ha pasado demasiado tiempo. Vuelve a empezar la activación.");
+
+  uint64_t step = totp_verify(key, sizeof(key), code, (uint64_t)time(NULL), 0);
+  if(!step) {
+    memset(key, 0, sizeof(key));
+    rl_fail(req_ip(r));
+    return send_err(r, 400, "El código no coincide. Comprueba que la hora del móvil es correcta y prueba con el siguiente.");
+  }
+  int er = cfg_totp_enable(r->user.name, key, step, codes, err, sizeof(err));
+  memset(key, 0, sizeof(key));
+  if(er) return send_err(r, 500, err);
+
+  pthread_mutex_lock(&g_tfa_lock);
+  for(int i=0; i<(int)(sizeof(g_tfa_pending)/sizeof(g_tfa_pending[0])); i++) {
+    if(!strcmp(g_tfa_pending[i].user, r->user.name)) memset(&g_tfa_pending[i], 0, sizeof(g_tfa_pending[0]));
+  }
+  pthread_mutex_unlock(&g_tfa_lock);
+  LOG_PRINTF("ps5share: '%s' activó la verificación en dos pasos\n", r->user.name);
+  return send_codes(r, codes);
+}
+
+
+static int
+h_me_2fa_disable(req_t *r) {
+  char err[256];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(!cfg_totp_enabled(&r->user)) return send_ok(r);
+  if(check_own_password_code(r)) return 0;
+  if(cfg_totp_disable(r->user.name, err, sizeof(err))) return send_err(r, 500, err);
+  LOG_PRINTF("ps5share: '%s' desactivó la verificación en dos pasos\n", r->user.name);
+  return send_ok(r);
+}
+
+
+static int
+h_me_2fa_codes(req_t *r) {
+  char err[256];
+  char codes[CFG_RCODES][CFG_RCODE_LEN + 2];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(!cfg_totp_enabled(&r->user)) return send_err(r, 400, "La verificación en dos pasos no está activada");
+  if(check_own_password_code(r)) return 0;
+  if(cfg_totp_new_codes(r->user.name, codes, err, sizeof(err))) return send_err(r, 500, err);
+  return send_codes(r, codes);
+}
+
+
+static int
+h_me_apppw_add(req_t *r) {
+  char pass[256], label[CFG_APPPW_LABEL * 4 + 1], err[256], np[CFG_APPPW_LEN + 4], id[9];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "pass", pass, sizeof(pass));
+  get_param(r->body, "label", label, sizeof(label));
+  int pr = check_own_password(r, pass);
+  memset(pass, 0, sizeof(pass));
+  if(pr) return 0;
+  if(cfg_apppw_add(r->user.name, label, np, id, err, sizeof(err))) return send_err(r, 400, err);
+  LOG_PRINTF("ps5share: '%s' creó una contraseña de aplicación\n", r->user.name);
+  sb_t b = {0};
+  sb_puts(&b, "{\"ok\":true,\"id\":");
+  sb_json_str(&b, id);
+  sb_puts(&b, ",\"password\":");
+  sb_json_str(&b, np);
+  sb_puts(&b, "}");
+  memset(np, 0, sizeof(np));
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_me_apppw_delete(req_t *r) {
+  char id[16], err[256];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "id", id, sizeof(id));
+  if(cfg_apppw_delete(r->user.name, id, err, sizeof(err))) return send_err(r, 400, err);
+  return send_ok(r);
+}
+
+
+static int
+h_admin_user_2fa_reset(req_t *r) {
+  char name[CFG_NAME_MAX + 1], err[256];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  get_param(r->body, "name", name, sizeof(name));
+  if(cfg_totp_disable(name, err, sizeof(err))) return send_err(r, 400, err);
+  LOG_PRINTF("ps5share: '%s' quitó la verificación en dos pasos de '%s'\n", r->user.name, name);
   return send_ok(r);
 }
 
@@ -1573,11 +1832,13 @@ h_admin_users(req_t *r) {
     sb_puts(&b, ",\"email\":");
     sb_json_str(&b, u->email);
     sb_printf(&b, ",\"admin\":%s,\"enabled\":%s,\"can_chpass\":%s,\"must_chpass\":%s,"
-              "\"has_key\":%s,\"pw_known\":%s,\"vault\":%s,\"vault_ready\":%s,\"mounts\":[",
+              "\"has_key\":%s,\"pw_known\":%s,\"vault\":%s,\"vault_ready\":%s,\"twofa\":%s,"
+              "\"apppw\":%d,\"mounts\":[",
               u->admin ? "true" : "false", u->enabled ? "true" : "false",
               u->can_chpass ? "true" : "false", u->must_chpass ? "true" : "false",
               u->kwrap[0] ? "true" : "false", u->pwenc[0] ? "true" : "false",
-              u->vault ? "true" : "false", vault_has_account_in(vdir, u->name) ? "true" : "false");
+              u->vault ? "true" : "false", vault_has_account_in(vdir, u->name) ? "true" : "false",
+              cfg_totp_enabled(u) ? "true" : "false", u->napppw);
     for(int j=0; j<u->nmounts; j++) {
       if(j) sb_puts(&b, ",");
       sb_puts(&b, "{\"name\":");
@@ -2318,6 +2579,13 @@ static const route_t routes[] = {
   {"GET",  "/api/me",                   h_me,                  1},
   {"POST", "/api/me/password",          h_me_password,         1},
   {"POST", "/api/me/email",             h_me_email,            1},
+  {"POST", "/api/me/2fa/setup",         h_me_2fa_setup,        1},
+  {"POST", "/api/me/2fa/enable",        h_me_2fa_enable,       1},
+  {"POST", "/api/me/2fa/disable",       h_me_2fa_disable,      1},
+  {"POST", "/api/me/2fa/codes",         h_me_2fa_codes,        1},
+  {"POST", "/api/me/apppw",             h_me_apppw_add,        1},
+  {"POST", "/api/me/apppw/delete",      h_me_apppw_delete,     1},
+  {"POST", "/api/admin/user/2fa/reset", h_admin_user_2fa_reset, 2},
   {"POST", "/api/forgot/email",         h_forgot_email,        0},
   {"POST", "/api/app/lang",             h_app_lang,            0},
   {"POST", "/api/forgot/request",       h_forgot_request,      0},

@@ -14,6 +14,7 @@ from strings import STRINGS, PATTERNS  # noqa: E402
 
 PAGE = os.path.join(ROOT, "web", "index.html")
 BEGIN, END = "<!--I18N-BEGIN-->", "<!--I18N-END-->"
+QR_BEGIN, QR_END = "<!--QRLIB-BEGIN-->", "<!--QRLIB-END-->"
 
 
 def data():
@@ -39,6 +40,14 @@ def build():
     else:
         i = page.index("<script>")
         page = page[:i] + block + "\n\n" + page[i:]
+    # Generador de códigos QR (para la verificación en dos pasos).
+    qr = open(os.path.join(ROOT, "web", "vendor", "qrcode-generator-1.4.4.js"), encoding="utf-8").read()
+    qblock = QR_BEGIN + "\n<script>\n" + qr + "\n</script>\n" + QR_END
+    if QR_BEGIN in page:
+        page = re.sub(re.escape(QR_BEGIN) + ".*?" + re.escape(QR_END), lambda m: qblock, page, flags=re.S)
+    else:
+        i = page.rindex("</body>")
+        page = page[:i] + qblock + "\n" + page[i:]
     open(PAGE, "w", encoding="utf-8").write(page)
     print("web/index.html: %d textos y %d patrones" % (len(STRINGS), len(PATTERNS)))
 
@@ -49,6 +58,7 @@ def check():
     pats = [re.compile(p[0]) for p in PATTERNS]
     page = open(PAGE, encoding="utf-8").read()
     page = re.sub(re.escape(BEGIN) + ".*?" + re.escape(END), "", page, flags=re.S)
+    page = re.sub(re.escape(QR_BEGIN) + ".*?" + re.escape(QR_END), "", page, flags=re.S)
     i = page.index("<script>")
     markup, script = page[:i], page[i:]
     markup = re.sub(r"<style>.*?</style>|<svg.*?</svg>", "", markup, flags=re.S)

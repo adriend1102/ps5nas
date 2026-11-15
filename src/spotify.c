@@ -38,7 +38,10 @@
 #define SP_LIB_EVERY     (5 * 60)        /* revisa la carpeta Entrada cada 5 min */
 #define SP_LOGIN_TTL     (30 * 60)
 #define SP_REFRESH_LIFE  (182 * 24 * 3600)  /* el token de refresco dura ~6 meses */
-#define SP_SCOPES        "user-library-read playlist-read-private playlist-modify-private playlist-modify-public"
+#define SP_SCOPES        "user-library-read playlist-read-private playlist-modify-private playlist-modify-public " \
+                         "user-top-read user-read-recently-played"
+#define SP_HIST_EVERY    (20 * 60)       /* historial de escuchas: solo da las 50 últimas */
+#define SP_HIST_KEEP     (400LL * 24 * 3600 * 1000)
 #define SP_AAD           "ps5share-spotify"
 
 
@@ -49,6 +52,17 @@ typedef struct sp_month {
   int  total;
   int  have;         /* con archivo en la carpeta de música */
 } sp_month_t;
+
+
+typedef struct sp_top {
+  int      ym;
+  char     pid[64];
+  int      final;       /* mes cerrado: ya no se toca */
+  uint32_t hash;        /* de la última lista enviada */
+  int      plays;       /* escuchas registradas ese mes */
+  int      n;           /* canciones en la lista */
+  int      have;        /* con archivo en la PS5 */
+} sp_top_t;
 
 
 static struct {
@@ -76,6 +90,15 @@ static struct {
   time_t access_exp;
   int          nmonths;
   sp_month_t   months[SP_MAX_MONTHS];
+  /* lo más escuchado */
+  int          top_enabled;
+  int          top_size;
+  char         scopes[512];
+  char         top_msg[256];
+  long long    hist_last_ms;     /* última escucha guardada */
+  time_t       hist_at;
+  int          ntops;
+  sp_top_t     tops[SP_MAX_MONTHS];
 } S;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -176,6 +199,26 @@ month_get_locked(int ym, int create) {
 }
 
 
+static sp_top_t *
+top_get_locked(int ym, int create) {
+  for(int i=0; i<S.ntops; i++) if(S.tops[i].ym == ym) return &S.tops[i];
+  if(!create || S.ntops >= SP_MAX_MONTHS) return NULL;
+  int pos = S.ntops;
+  while(pos > 0 && S.tops[pos-1].ym > ym) pos--;
+  memmove(&S.tops[pos+1], &S.tops[pos], (size_t)(S.ntops - pos) * sizeof(sp_top_t));
+  memset(&S.tops[pos], 0, sizeof(sp_top_t));
+  S.tops[pos].ym = ym;
+  S.ntops++;
+  return &S.tops[pos];
+}
+
+
+static int
+top_scope_ok_locked(void) {
+  return strstr(S.scopes, "user-top-read") && strstr(S.scopes, "user-read-recently-played");
+}
+
+
 /* ------------------------------------------------------------------ */
 /* Persistencia                                                        */
 /* ------------------------------------------------------------------ */
@@ -210,6 +253,14 @@ save_locked(void) {
   fprintf(f, "set\tlast_sync\t%lld\n", (long long)S.last_sync);
   fprintf(f, "set\tlast_ok\t%d\n", S.last_ok);
   fprintf(f, "set\tmessage\t%s\n", S.message);
+  fprintf(f, "set\ttop_enabled\t%d\n", S.top_enabled);
+  fprintf(f, "set\ttop_size\t%d\n", S.top_size);
+  fprintf(f, "set\tscopes\t%s\n", S.scopes);
+  fprintf(f, "set\thist_last\t%lld\n", S.hist_last_ms);
+  for(int i=0; i<S.ntops; i++) {
+    const sp_top_t *t = &S.tops[i];
+    fprintf(f, "top\t%04d-%02d\t%s\t%d\t%u\n", t->ym / 12, t->ym % 12 + 1, t->pid, t->final, t->hash);
+  }
   for(int i=0; i<S.nmonths; i++) {
     const sp_month_t *m = &S.months[i];
     if(!m->pid[0]) continue;
@@ -244,6 +295,17 @@ load(void) {
       else if(!strcmp(k, "last_sync")) S.last_sync = (time_t)atoll(v);
       else if(!strcmp(k, "last_ok")) S.last_ok = atoi(v);
       else if(!strcmp(k, "message")) snprintf(S.message, sizeof(S.message), "%s", v);
+      else if(!strcmp(k, "top_enabled")) S.top_enabled = atoi(v);
+      else if(!strcmp(k, "top_size") && atoi(v) >= 5 && atoi(v) <= 100) S.top_size = atoi(v);
+      else if(!strcmp(k, "scopes")) snprintf(S.scopes, sizeof(S.scopes), "%s", v);
+      else if(!strcmp(k, "hist_last")) S.hist_last_ms = atoll(v);
+    } else if(n >= 5 && !strcmp(fld[0], "top") && parse_ym(fld[1]) >= 0) {
+      sp_top_t *t = top_get_locked(parse_ym(fld[1]), 1);
+      if(t) {
+        snprintf(t->pid, sizeof(t->pid), "%s", fld[2]);
+        t->final = atoi(fld[3]);
+        t->hash = (uint32_t)strtoul(fld[4], NULL, 10);
+      }
     } else if(n >= 3 && !strcmp(fld[0], "pl") && parse_ym(fld[1]) >= 0) {
       sp_month_t *m = month_get_locked(parse_ym(fld[1]), 1);
       if(m) {
@@ -348,6 +410,7 @@ token_request(const char *form, int *invalid_grant, char *err, size_t errlen) {
   }
   const char *acc = json_str(json_get(j, "access_token"));
   const char *ref = json_str(json_get(j, "refresh_token"));
+  const char *scope = json_str(json_get(j, "scope"));
   int exp = (int)json_num(json_get(j, "expires_in"));
   if(!acc[0]) {
     snprintf(err, errlen, "Spotify no devolvió un token");
@@ -356,6 +419,7 @@ token_request(const char *form, int *invalid_grant, char *err, size_t errlen) {
   pthread_mutex_lock(&g_lock);
   snprintf(S.access, sizeof(S.access), "%s", acc);
   S.access_exp = time(NULL) + (exp > 120 ? exp - 60 : 300);
+  if(scope[0]) snprintf(S.scopes, sizeof(S.scopes), "%s", scope);
   if(ref[0]) {
     char enc[CRYPT_SEAL_HEX + 1];
     if(cfg_seal(SP_AAD, ref, strlen(ref), enc, sizeof(enc))) {
@@ -538,6 +602,7 @@ spotify_disconnect(void) {
   S.access[0] = 0;
   S.user_id[0] = S.user_name[0] = 0;
   S.connected_at = 0;
+  S.scopes[0] = 0;
   snprintf(S.message, sizeof(S.message), "Desconectado");
   save_locked();
   pthread_mutex_unlock(&g_lock);
@@ -629,6 +694,26 @@ fetch_me(char *err, size_t errlen) {
 }
 
 
+/* Título, artistas, álbum y duración de un objeto «track». */
+static void
+parse_track(const jv_t *tr, lib_track_t *x) {
+  snprintf(x->uri, sizeof(x->uri), "%s", json_str(json_get(tr, "uri")));
+  snprintf(x->title, sizeof(x->title), "%s", json_str(json_get(tr, "name")));
+  snprintf(x->album, sizeof(x->album), "%s", json_str(json_path(tr, "album.name")));
+  x->duration_ms = (int)json_num(json_get(tr, "duration_ms"));
+  jv_t *ar = json_get(tr, "artists");
+  size_t o = 0;
+  for(jv_t *a = ar ? ar->child : NULL; a && o + 3 < sizeof(x->artist); a = a->next) {
+    o += (size_t)snprintf(x->artist + o, sizeof(x->artist) - o, "%s%s", o ? ", " : "",
+          json_str(json_get(a, "name")));
+  }
+  if(o >= sizeof(x->artist)) x->artist[sizeof(x->artist) - 1] = 0;
+  clean_field(x->title);
+  clean_field(x->album);
+  clean_field(x->artist);
+}
+
+
 /* «Me gusta» desde START_YM, en orden cronológico. */
 static lib_track_t *
 fetch_liked(int start_ym, int *count, char *err, size_t errlen) {
@@ -673,19 +758,7 @@ fetch_liked(int start_ym, int *count, char *err, size_t errlen) {
       x->ym = ym;
       snprintf(x->added_at, sizeof(x->added_at), "%s", added);
       snprintf(x->uri, sizeof(x->uri), "%s", uri);
-      snprintf(x->title, sizeof(x->title), "%s", json_str(json_get(tr, "name")));
-      snprintf(x->album, sizeof(x->album), "%s", json_str(json_path(tr, "album.name")));
-      x->duration_ms = (int)json_num(json_get(tr, "duration_ms"));
-      jv_t *ar = json_get(tr, "artists");
-      size_t o = 0;
-      for(jv_t *a = ar ? ar->child : NULL; a && o + 3 < sizeof(x->artist); a = a->next) {
-        o += (size_t)snprintf(x->artist + o, sizeof(x->artist) - o, "%s%s", o ? ", " : "",
-                              json_str(json_get(a, "name")));
-      }
-      if(o >= sizeof(x->artist)) x->artist[sizeof(x->artist) - 1] = 0;
-      clean_field(x->title);
-      clean_field(x->album);
-      clean_field(x->artist);
+      parse_track(tr, x);
       if(n >= SP_MAX_TRACKS) done = 1;
     }
     snprintf(next, sizeof(next), "%s", json_str(json_get(j, "next")));
@@ -725,7 +798,7 @@ fetch_playlists(int *count, char *err, size_t errlen) {
     jv_t *items = json_get(j, "items");
     for(jv_t *it = items ? items->child : NULL; it; it = it->next) {
       const char *name = json_str(json_get(it, "name"));
-      if(strncmp(name, "pl ", 3)) continue;
+      if(strncmp(name, "pl ", 3) && strncmp(name, "top ", 4)) continue;
       if(n == cap) {
         cap = cap ? cap * 2 : 64;
         named_t *nv = realloc(v, (size_t)cap * sizeof(*nv));
@@ -832,6 +905,476 @@ add_items(const char *id, const char **uris, int n, char *err, size_t errlen) {
 
 
 /* ------------------------------------------------------------------ */
+/* Lo más escuchado del mes                                            */
+/* ------------------------------------------------------------------ */
+/* La Web API no da escuchas por mes: /me/player/recently-played solo
+   devuelve las 50 últimas.  Se consulta cada 20 minutos y se guardan en
+   spotify-plays.tsv para contarlas.  Si faltan datos (la consola estuvo
+   apagada), se completa con /me/top/tracks?time_range=short_term (unas 4
+   semanas) tomado durante ese mes.  */
+
+typedef struct play {
+  long long   ms;
+  lib_track_t t;
+} play_t;
+
+
+static int
+ym_of_ms(long long ms) {
+  time_t t = (time_t)(ms / 1000);
+  struct tm tm;
+  gmtime_r(&t, &tm);
+  return (tm.tm_year + 1900) * 12 + tm.tm_mon;
+}
+
+
+static int
+current_ym(void) {
+  return ym_of_ms((long long)time(NULL) * 1000);
+}
+
+
+/* "2026-11-15T20:01:02.123Z" -> milisegundos */
+static long long
+iso_ms(const char *s) {
+  struct tm tm = {0};
+  int ms = 0;
+  if(sscanf(s, "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+            &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) return -1;
+  const char *dot = strchr(s, '.');
+  if(dot) {
+    int d = 0;
+    for(const char *p = dot + 1; *p >= '0' && *p <= '9' && d < 3; p++, d++) ms = ms * 10 + (*p - '0');
+    while(d++ < 3) ms *= 10;
+  }
+  tm.tm_year -= 1900;
+  tm.tm_mon -= 1;
+  return (long long)timegm(&tm) * 1000 + ms;
+}
+
+
+static play_t *
+load_plays(int *count) {
+  char path[PATH_MAX], line[2048];
+  play_t *v = NULL;
+  int n = 0, cap = 0;
+  *count = 0;
+  snprintf(path, sizeof(path), "%s/spotify-plays.tsv", g_dir);
+  FILE *f = fopen(path, "r");
+  if(!f) return NULL;
+  while(fgets(line, sizeof(line), f) && n < 200000) {
+    line[strcspn(line, "\r\n")] = 0;
+    char *fld[6] = {0};
+    int k = 0;
+    for(char *p = line, *x; k < 6 && (x = strsep(&p, "\t")); ) fld[k++] = x;
+    if(k < 6) continue;
+    if(n == cap) {
+      cap = cap ? cap * 2 : 1024;
+      play_t *nv = realloc(v, (size_t)cap * sizeof(*nv));
+      if(!nv) break;
+      v = nv;
+    }
+    play_t *x = &v[n++];
+    memset(x, 0, sizeof(*x));
+    x->ms = atoll(fld[0]);
+    x->t.ym = ym_of_ms(x->ms);
+    snprintf(x->t.uri, sizeof(x->t.uri), "%s", fld[1]);
+    x->t.duration_ms = atoi(fld[2]);
+    snprintf(x->t.artist, sizeof(x->t.artist), "%s", fld[3]);
+    snprintf(x->t.title, sizeof(x->t.title), "%s", fld[4]);
+    snprintf(x->t.album, sizeof(x->t.album), "%s", fld[5]);
+  }
+  fclose(f);
+  *count = n;
+  return v;
+}
+
+
+static int
+save_plays(const play_t *v, int n) {
+  char path[PATH_MAX], tmp[PATH_MAX + 8];
+  snprintf(path, sizeof(path), "%s/spotify-plays.tsv", g_dir);
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  FILE *f = fopen(tmp, "w");
+  if(!f) return -1;
+  for(int i=0; i<n; i++) {
+    fprintf(f, "%lld\t%s\t%d\t%s\t%s\t%s\n", v[i].ms, v[i].t.uri, v[i].t.duration_ms,
+            v[i].t.artist, v[i].t.title, v[i].t.album);
+  }
+  if(fclose(f) || rename(tmp, path)) { LOG_PERROR(path); return -1; }
+  return 0;
+}
+
+
+/* Guarda las escuchas nuevas.  Devuelve cuántas o -1. */
+static int
+poll_history(char *err, size_t errlen) {
+  https_resp_t r;
+  if(api("GET", "/v1/me/player/recently-played?limit=50", NULL, &r, err, errlen)) {
+    https_resp_free(&r);
+    return -1;
+  }
+  jv_t *j = json_parse(r.body, r.len);
+  https_resp_free(&r);
+  if(!j) {
+    snprintf(err, errlen, "Respuesta no válida de Spotify (recently-played)");
+    return -1;
+  }
+  pthread_mutex_lock(&g_lock);
+  long long last = S.hist_last_ms;
+  pthread_mutex_unlock(&g_lock);
+
+  play_t fresh[50];
+  int nf = 0;
+  jv_t *items = json_get(j, "items");
+  for(jv_t *it = items ? items->child : NULL; it && nf < 50; it = it->next) {
+    long long ms = iso_ms(json_str(json_get(it, "played_at")));
+    jv_t *tr = json_get(it, "track");
+    if(!tr || tr->type != J_OBJ) tr = json_get(it, "item");
+    if(ms <= last || !tr) continue;
+    play_t *x = &fresh[nf];
+    memset(x, 0, sizeof(*x));
+    x->ms = ms;
+    parse_track(tr, &x->t);
+    if(strncmp(x->t.uri, "spotify:track:", 14)) continue;
+    nf++;
+  }
+  json_free(j);
+  if(!nf) return 0;
+
+  int n;
+  play_t *all = load_plays(&n);
+  play_t *nv = realloc(all, (size_t)(n + nf) * sizeof(play_t));
+  if(!nv) {
+    free(all);
+    snprintf(err, errlen, "Sin memoria");
+    return -1;
+  }
+  all = nv;
+  long long newest = last, cut = (long long)time(NULL) * 1000 - SP_HIST_KEEP;
+  int o = 0;
+  for(int i=0; i<n; i++) if(all[i].ms >= cut) all[o++] = all[i];
+  /* vienen de la más nueva a la más antigua */
+  for(int i=nf-1; i>=0; i--) {
+    all[o++] = fresh[i];
+    if(fresh[i].ms > newest) newest = fresh[i].ms;
+  }
+  int rc = save_plays(all, o);
+  free(all);
+  if(rc) {
+    snprintf(err, errlen, "No se pudo guardar el historial de escuchas");
+    return -1;
+  }
+  pthread_mutex_lock(&g_lock);
+  S.hist_last_ms = newest;
+  save_locked();
+  pthread_mutex_unlock(&g_lock);
+  return nf;
+}
+
+
+/* Top de ~4 semanas según Spotify; se guarda una foto por mes (la última de ese mes). */
+static int
+snapshot_top(char *err, size_t errlen) {
+  https_resp_t r;
+  char path[PATH_MAX], tmp[PATH_MAX + 8];
+  if(api("GET", "/v1/me/top/tracks?time_range=short_term&limit=50", NULL, &r, err, errlen)) {
+    https_resp_free(&r);
+    return -1;
+  }
+  jv_t *j = json_parse(r.body, r.len);
+  https_resp_free(&r);
+  jv_t *items = json_get(j, "items");
+  if(!items) {
+    json_free(j);
+    snprintf(err, errlen, "Respuesta no válida de Spotify (top/tracks)");
+    return -1;
+  }
+  int cur = current_ym();
+  snprintf(path, sizeof(path), "%s/spotify-top-%04d-%02d.tsv", g_dir, cur / 12, cur % 12 + 1);
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  FILE *f = fopen(tmp, "w");
+  if(!f) {
+    json_free(j);
+    return -1;
+  }
+  fprintf(f, "ym\t%d\n", cur);
+  for(jv_t *it = items->child; it; it = it->next) {
+    lib_track_t x;
+    memset(&x, 0, sizeof(x));
+    parse_track(it, &x);
+    if(strncmp(x.uri, "spotify:track:", 14)) continue;
+    fprintf(f, "%s\t%d\t%s\t%s\t%s\n", x.uri, x.duration_ms, x.artist, x.title, x.album);
+  }
+  json_free(j);
+  if(fclose(f) || rename(tmp, path)) return -1;
+  return 0;
+}
+
+
+/* Top tomado durante el mes YM (NULL si no hay). */
+static lib_track_t *
+load_snapshot(int ym, int *count) {
+  char path[PATH_MAX], line[2048];
+  lib_track_t *v = NULL;
+  int n = 0;
+  *count = 0;
+  snprintf(path, sizeof(path), "%s/spotify-top-%04d-%02d.tsv", g_dir, ym / 12, ym % 12 + 1);
+  FILE *f = fopen(path, "r");
+  if(!f) return NULL;
+  if(!fgets(line, sizeof(line), f) || strncmp(line, "ym\t", 3) || atoi(line + 3) != ym ||
+     !(v = calloc(50, sizeof(*v)))) {
+    fclose(f);
+    return NULL;
+  }
+  while(n < 50 && fgets(line, sizeof(line), f)) {
+    line[strcspn(line, "\r\n")] = 0;
+    char *fld[5] = {0};
+    int k = 0;
+    for(char *p = line, *x; k < 5 && (x = strsep(&p, "\t")); ) fld[k++] = x;
+    if(k < 5) continue;
+    lib_track_t *x = &v[n++];
+    x->ym = ym;
+    snprintf(x->uri, sizeof(x->uri), "%s", fld[0]);
+    x->duration_ms = atoi(fld[1]);
+    snprintf(x->artist, sizeof(x->artist), "%s", fld[2]);
+    snprintf(x->title, sizeof(x->title), "%s", fld[3]);
+    snprintf(x->album, sizeof(x->album), "%s", fld[4]);
+  }
+  fclose(f);
+  *count = n;
+  return v;
+}
+
+
+typedef struct agg {
+  lib_track_t t;
+  int         count;
+  int         snap;      /* puesto en el top de Spotify (999 = no está) */
+  long long   last;
+} agg_t;
+
+
+static int
+agg_cmp(const void *a, const void *b) {
+  const agg_t *x = a, *y = b;
+  if(x->count != y->count) return y->count - x->count;
+  if(x->snap != y->snap) return x->snap - y->snap;
+  return (y->last > x->last) - (y->last < x->last);
+}
+
+
+/* Ranking del mes YM con PLAYS (todas) y la foto del top de ese mes.
+   Devuelve hasta SIZE canciones (malloc) y en *NPLAYS las escuchas del mes. */
+static lib_track_t *
+rank_month(int ym, int size, const play_t *plays, int np, int *count, int *nplays) {
+  int ns;
+  lib_track_t *snap = load_snapshot(ym, &ns);
+  agg_t *a = calloc((size_t)(np + ns + 1), sizeof(*a));
+  int na = 0, pc = 0;
+  *count = 0;
+  if(!a) {
+    free(snap);
+    return NULL;
+  }
+  for(int i=0; i<np; i++) {
+    if(plays[i].t.ym != ym) continue;
+    pc++;
+    int k;
+    for(k=0; k<na && strcmp(a[k].t.uri, plays[i].t.uri); k++) {}
+    if(k == na) {
+      a[na].t = plays[i].t;
+      a[na].snap = 999;
+      na++;
+    }
+    a[k].count++;
+    if(plays[i].ms > a[k].last) a[k].last = plays[i].ms;
+  }
+  for(int i=0; i<ns; i++) {
+    int k;
+    for(k=0; k<na && strcmp(a[k].t.uri, snap[i].uri); k++) {}
+    if(k == na) {
+      a[na].t = snap[i];
+      na++;
+    }
+    a[k].snap = i;
+  }
+  free(snap);
+  qsort(a, (size_t)na, sizeof(*a), agg_cmp);
+  if(na > size) na = size;
+  lib_track_t *out = calloc((size_t)(na ? na : 1), sizeof(*out));
+  for(int i=0; out && i<na; i++) {
+    out[i] = a[i].t;
+    out[i].ym = ym;
+  }
+  free(a);
+  *count = out ? na : 0;
+  *nplays = pc;
+  return out;
+}
+
+
+static uint32_t
+list_hash(const lib_track_t *t, int n) {
+  uint32_t h = 2166136261u;
+  for(int i=0; i<n; i++) {
+    for(const char *p = t[i].uri; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    h = (h ^ ',') * 16777619u;
+  }
+  return h ? h : 1;
+}
+
+
+/* Sustituye el contenido de la playlist (máx. 100). */
+static int
+replace_items(const char *id, const lib_track_t *t, int n, int *gone, char *err, size_t errlen) {
+  jb_t b = {0};
+  char path[160];
+  https_resp_t r = {0};
+  jb_printf(&b, "{\"uris\":[");
+  for(int i=0; i<n && i<100; i++) jb_printf(&b, "%s\"%s\"", i ? "," : "", t[i].uri);
+  jb_printf(&b, "]}");
+  snprintf(path, sizeof(path), "/v1/playlists/%s/items", id);
+  int rc = b.p ? api("PUT", path, b.p, &r, err, errlen) : -1;
+  *gone = rc && r.status == 404;
+  https_resp_free(&r);
+  free(b.p);
+  return rc;
+}
+
+
+static int
+create_named(const char *name, const char *desc, char *id, size_t idlen, char *err, size_t errlen) {
+  jb_t b = {0};
+  https_resp_t r;
+  jb_printf(&b, "{\"name\":");
+  jb_str(&b, name);
+  jb_printf(&b, ",\"public\":false,\"description\":");
+  jb_str(&b, desc);
+  jb_printf(&b, "}");
+  int rc = b.p ? api("POST", "/v1/me/playlists", b.p, &r, err, errlen) : -1;
+  free(b.p);
+  if(rc) {
+    https_resp_free(&r);
+    return -1;
+  }
+  jv_t *j = json_parse(r.body, r.len);
+  snprintf(id, idlen, "%s", json_str(json_get(j, "id")));
+  json_free(j);
+  https_resp_free(&r);
+  if(!id[0]) {
+    snprintf(err, errlen, "Spotify no devolvió el id de la playlist nueva");
+    return -1;
+  }
+  LOG_PRINTF("ps5share: playlist «%s» creada\n", name);
+  return 0;
+}
+
+
+/* Crea o actualiza las «top M/AAAA».  Los meses pasados se cierran. */
+static int
+sync_tops(char *err, size_t errlen) {
+  int np, cur = current_ym(), ret = 0, npl = 0, fetched = 0;
+  named_t *pls = NULL;
+  play_t *plays = load_plays(&np);
+
+  pthread_mutex_lock(&g_lock);
+  int size = S.top_size, start = S.start_ym;
+  /* meses con escuchas y el actual */
+  if(cur >= start) top_get_locked(cur, 1);
+  for(int i=0; i<np; i++) if(plays[i].t.ym >= start) top_get_locked(plays[i].t.ym, 1);
+  int nt = S.ntops;
+  sp_top_t tops[SP_MAX_MONTHS];
+  memcpy(tops, S.tops, (size_t)nt * sizeof(sp_top_t));
+  pthread_mutex_unlock(&g_lock);
+
+  for(int i=0; i<nt; i++) {
+    sp_top_t *t = &tops[i];
+    if(t->final || t->ym < start) continue;
+    int n, pc;
+    lib_track_t *list = rank_month(t->ym, size, plays, np, &n, &pc);
+    if(!list) continue;
+    if(!n) {           /* aún nada que poner */
+      free(list);
+      continue;
+    }
+    int y = t->ym / 12, m = t->ym % 12 + 1;
+    char name[40], desc[200];
+    snprintf(name, sizeof(name), "top %d/%d", m, y);
+    snprintf(desc, sizeof(desc), "Mis %d canciones más escuchadas en %s de %d (PS5NAS)", n,
+             lib_month_name(m), y);
+    uint32_t h = list_hash(list, n);
+    int rc = 0, gone = 0;
+    if(!t->pid[0]) {
+      if(!fetched) {
+        pls = fetch_playlists(&npl, err, errlen);
+        if(!pls && err[0]) { free(list); ret = -1; break; }
+        fetched = 1;
+      }
+      for(int k=0; k<npl; k++) if(!strcmp(pls[k].name, name)) { snprintf(t->pid, sizeof(t->pid), "%s", pls[k].id); break; }
+      if(!t->pid[0]) rc = create_named(name, desc, t->pid, sizeof(t->pid), err, errlen);
+      t->hash = 0;
+    }
+    if(!rc && h != t->hash) {
+      rc = replace_items(t->pid, list, n, &gone, err, errlen);
+      if(rc && gone) {         /* la borraron: se vuelve a crear */
+        err[0] = 0;
+        t->pid[0] = 0;
+        rc = create_named(name, desc, t->pid, sizeof(t->pid), err, errlen);
+        if(!rc) rc = replace_items(t->pid, list, n, &gone, err, errlen);
+      }
+      if(!rc) {
+        t->hash = h;
+        LOG_PRINTF("ps5share: «%s» actualizada (%d canciones)\n", name, n);
+      }
+    }
+    free(list);
+    if(rc) { ret = -1; break; }
+    if(t->ym < cur) t->final = 1;
+
+    pthread_mutex_lock(&g_lock);
+    sp_top_t *st = top_get_locked(t->ym, 1);
+    if(st) {
+      snprintf(st->pid, sizeof(st->pid), "%s", t->pid);
+      st->hash = t->hash;
+      st->final = t->final;
+    }
+    save_locked();
+    pthread_mutex_unlock(&g_lock);
+  }
+  free(pls);
+  free(plays);
+  return ret;
+}
+
+
+/* Escuchas + top + playlists.  No interrumpe la sincronización principal. */
+static void
+top_pass(int full) {
+  char err[512] = "";
+  pthread_mutex_lock(&g_lock);
+  int on = S.top_enabled, scope = top_scope_ok_locked(), conn = S.refresh_enc[0] != 0;
+  pthread_mutex_unlock(&g_lock);
+  if(!on || !conn) return;
+  if(!scope) {
+    pthread_mutex_lock(&g_lock);
+    snprintf(S.top_msg, sizeof(S.top_msg), "Falta permiso: pulsa «Volver a conectar» para activar lo más escuchado");
+    pthread_mutex_unlock(&g_lock);
+    return;
+  }
+  int got = poll_history(err, sizeof(err));
+  pthread_mutex_lock(&g_lock);
+  S.hist_at = time(NULL);
+  pthread_mutex_unlock(&g_lock);
+  if(got >= 0 && full && !snapshot_top(err, sizeof(err)) && !sync_tops(err, sizeof(err))) err[0] = 0;
+  pthread_mutex_lock(&g_lock);
+  snprintf(S.top_msg, sizeof(S.top_msg), "%s", got >= 0 && !err[0] ? "OK" : err);
+  pthread_mutex_unlock(&g_lock);
+  if(err[0]) LOG_PRINTF("ps5share: Spotify (lo más escuchado): %s\n", err);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Sincronización                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -852,7 +1395,36 @@ library_pass(void) {
   int moved = lib_ingest(dir);
   if(moved) LOG_PRINTF("ps5share: %d canciones nuevas colocadas en %s\n", moved, dir);
   lib_track_t *t = load_tracks(&n);
-  if(lib_build(dir, t, n, months, nm)) {
+
+  /* listas «top» */
+  int np, ntop = 0, size;
+  play_t *plays = load_plays(&np);
+  pthread_mutex_lock(&g_lock);
+  int nt = S.top_enabled ? S.ntops : 0, start = S.start_ym;
+  size = S.top_size;
+  int tym[SP_MAX_MONTHS];
+  for(int i=0; i<nt; i++) tym[i] = S.tops[i].ym;
+  pthread_mutex_unlock(&g_lock);
+  lib_list_t *lists = calloc((size_t)(nt ? nt : 1), sizeof(*lists));
+  int *tplays = calloc((size_t)(nt ? nt : 1), sizeof(int));
+  for(int i=0; lists && tplays && i<nt; i++) {
+    if(tym[i] < start) continue;
+    int c, pc;
+    lib_track_t *list = rank_month(tym[i], size, plays, np, &c, &pc);
+    if(!list) continue;
+    lib_list_t *l = &lists[ntop];
+    int y = tym[i] / 12, m = tym[i] % 12 + 1;
+    snprintf(l->file, sizeof(l->file), "Top %04d-%02d %s %d", y, m, lib_month_name(m), y);
+    snprintf(l->title, sizeof(l->title), "top %d/%d", m, y);
+    l->tracks = list;
+    l->n = c;
+    tplays[ntop] = pc;
+    ntop++;
+  }
+  free(plays);
+
+  if(lib_build(dir, t, n, months, nm, lists, ntop)) {
+    for(int i=0; i<ntop; i++) lists[i].have = 0;
     /* sin carpeta de música (¿USB desconectado?): al menos los totales */
     for(int i=0; i<nm; i++) {
       months[i].total = months[i].have = 0;
@@ -865,8 +1437,17 @@ library_pass(void) {
       sp_month_t *m = month_get_locked(months[i].ym, 0);
       if(m) { m->total = months[i].total; m->have = months[i].have; }
     }
+    for(int i=0; i<ntop; i++) {
+      int y, mo;
+      sscanf(lists[i].title, "top %d/%d", &mo, &y);
+      sp_top_t *tp = top_get_locked(y * 12 + mo - 1, 0);
+      if(tp) { tp->n = lists[i].n; tp->have = lists[i].have; tp->plays = tplays[i]; }
+    }
     pthread_mutex_unlock(&g_lock);
   }
+  for(int i=0; lists && i<ntop; i++) free((void*)lists[i].tracks);
+  free(lists);
+  free(tplays);
   free(t);
   free(months);
 }
@@ -967,7 +1548,7 @@ do_sync(char *err, size_t errlen) {
 static void*
 sync_thread(void *arg) {
   (void)arg;
-  time_t last_lib = 0;
+  time_t last_lib = 0, last_hist = 0;
   for(;;) {
     pthread_mutex_lock(&g_lock);
     struct timespec ts;
@@ -995,6 +1576,10 @@ sync_thread(void *arg) {
       save_locked();
       pthread_mutex_unlock(&g_lock);
     }
+    if(run || now - last_hist >= SP_HIST_EVERY) {
+      top_pass(run);
+      last_hist = time(NULL);
+    }
     if(run || now - last_lib >= SP_LIB_EVERY) {
       library_pass();
       last_lib = time(NULL);
@@ -1020,6 +1605,8 @@ spotify_init(const char *confdir) {
   snprintf(S.music_dir, sizeof(S.music_dir), "%s", SPOTIFY_DEFAULT_DIR);
   S.interval_h = 1;
   S.enabled = 1;
+  S.top_enabled = 1;
+  S.top_size = 50;
   load();
   S.next_sync = S.last_sync + 60;    /* tras arrancar, en cuanto haya red */
   pthread_mutex_unlock(&g_lock);
@@ -1046,7 +1633,8 @@ spotify_request_sync(void) {
 
 int
 spotify_configure(const char *client_id, const char *start, const char *music_dir,
-                  int interval_h, int enabled, char *err, size_t errlen) {
+                  int interval_h, int enabled, int top_enabled, int top_size,
+                  char *err, size_t errlen) {
   int ym = -1;
   if(start && start[0] && (ym = parse_ym(start)) < 0) {
     snprintf(err, errlen, "Mes de inicio no válido (usa AAAA-MM)");
@@ -1068,6 +1656,10 @@ spotify_configure(const char *client_id, const char *start, const char *music_di
     snprintf(err, errlen, "La carpeta de música debe ser una ruta absoluta");
     return -1;
   }
+  if(top_size >= 0 && (top_size < 5 || top_size > 100)) {
+    snprintf(err, errlen, "El top debe tener entre 5 y 100 canciones");
+    return -1;
+  }
   if(interval_h == 0 || interval_h > 24 * 7) {
     snprintf(err, errlen, "Intervalo no válido (1 a 168 horas)");
     return -1;
@@ -1080,6 +1672,7 @@ spotify_configure(const char *client_id, const char *start, const char *music_di
     S.refresh_enc[0] = 0;
     S.access[0] = 0;
     S.user_id[0] = S.user_name[0] = 0;
+    S.scopes[0] = 0;
   }
   if(ym >= 0 && ym != S.start_ym) {
     S.start_ym = ym;
@@ -1095,6 +1688,11 @@ spotify_configure(const char *client_id, const char *start, const char *music_di
     S.next_sync = S.last_sync + interval_h * 3600;
   }
   if(enabled >= 0) S.enabled = enabled;
+  if(top_enabled >= 0) S.top_enabled = top_enabled;
+  if(top_size > 0 && top_size != S.top_size) {
+    S.top_size = top_size;
+    for(int i=0; i<S.ntops; i++) if(!S.tops[i].final) S.tops[i].hash = 0;
+  }
   save_locked();
   pthread_mutex_unlock(&g_lock);
   return 0;
@@ -1133,6 +1731,23 @@ spotify_status_json(void) {
               lib_month_name(m->ym % 12 + 1), m->ym / 12);
     jb_str(&b, m->pid);
     jb_printf(&b, ",\"total\":%d,\"have\":%d}", m->total, m->have);
+    first = 0;
+  }
+  jb_printf(&b, "],\"top_enabled\":%s,\"top_size\":%d,\"top_scope_ok\":%s,\"hist_at\":%lld,\"top_message\":",
+            S.top_enabled ? "true" : "false", S.top_size, top_scope_ok_locked() ? "true" : "false",
+            (long long)S.hist_at);
+  jb_str(&b, S.top_msg);
+  jb_printf(&b, ",\"tops\":[");
+  first = 1;
+  for(int i=S.ntops - 1; i>=0; i--) {
+    const sp_top_t *t = &S.tops[i];
+    if(t->ym < S.start_ym) continue;
+    jb_printf(&b, "%s{\"month\":\"%04d-%02d\",\"name\":\"top %d/%d\",\"label\":\"%s %d\",\"playlist\":",
+              first ? "" : ",", t->ym / 12, t->ym % 12 + 1, t->ym % 12 + 1, t->ym / 12,
+              lib_month_name(t->ym % 12 + 1), t->ym / 12);
+    jb_str(&b, t->pid);
+    jb_printf(&b, ",\"final\":%s,\"plays\":%d,\"n\":%d,\"have\":%d}", t->final ? "true" : "false",
+              t->plays, t->n, t->have);
     first = 0;
   }
   jb_printf(&b, "]}");

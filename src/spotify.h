@@ -10,7 +10,11 @@
    consola).  Como Spotify solo admite http://127.0.0.1 como dirección de
    vuelta, el usuario copia la dirección a la que le lleva el navegador y la
    pega en el panel.  El token de refresco se guarda cifrado con la clave
-   maestra de la consola.  */
+   maestra de la consola.
+
+   Además, «top M/AAAA»: las canciones más escuchadas de cada mes, contadas
+   con el historial de escuchas (se consulta cada 20 minutos) y completadas
+   con el top de ~4 semanas de Spotify.  */
 
 #pragma once
 
@@ -28,7 +32,8 @@ char *spotify_status_json(void);
 /* Cambia ajustes.  Los punteros NULL / valores < 0 no se tocan.
    START: "AAAA-MM".  Devuelve 0 o -1 con ERR. */
 int   spotify_configure(const char *client_id, const char *start, const char *music_dir,
-                        int interval_h, int enabled, char *err, size_t errlen);
+                        int interval_h, int enabled, int top_enabled, int top_size,
+                        char *err, size_t errlen);
 
 /* Prepara un inicio de sesión y escribe la URL de autorización en OUT. */
 int   spotify_login_url(char *out, size_t outlen, char *err, size_t errlen);

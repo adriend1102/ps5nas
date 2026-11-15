@@ -500,7 +500,7 @@ bprintf(buf_t *b, const char *fmt, ...) {
 
 int
 lib_build(const char *dir, const lib_track_t *tracks, int ntracks,
-          lib_month_t *months, int nmonths) {
+          lib_month_t *months, int nmonths, lib_list_t *extra, int nextra) {
   struct stat st;
   char path[PATH_MAX];
   findex_t fi = {0};
@@ -542,6 +542,26 @@ lib_build(const char *dir, const lib_track_t *tracks, int ntracks,
     months[m].have = have;
     int pn = snprintf(path, sizeof(path), "%s/%s/%04d-%02d %s %d.m3u8", dir, LISTS, year, mon,
                       lib_month_name(mon), year);
+    if(pl.p && pn > 0 && pn < (int)sizeof(path) && write_if_changed(path, pl.p, pl.len)) LOG_PERROR(path);
+    free(pl.p);
+  }
+  for(int x=0; x<nextra; x++) {
+    lib_list_t *l = &extra[x];
+    buf_t pl = {0};
+    int have = 0;
+    bprintf(&pl, "#EXTM3U\n#PLAYLIST:%s\n", l->title);
+    for(int i=0; i<l->n; i++) {
+      const lib_track_t *t = &l->tracks[i];
+      const char *rel = match(&fi, t);
+      if(rel) {
+        have++;
+        bprintf(&pl, "#EXTINF:%d,%s - %s\n../%s\n", t->duration_ms / 1000, t->artist, t->title, rel);
+      } else {
+        bprintf(&pl, "# FALTA: %s - %s\n", t->artist, t->title);
+      }
+    }
+    l->have = have;
+    int pn = snprintf(path, sizeof(path), "%s/%s/%s.m3u8", dir, LISTS, l->file);
     if(pl.p && pn > 0 && pn < (int)sizeof(path) && write_if_changed(path, pl.p, pl.len)) LOG_PERROR(path);
     free(pl.p);
   }

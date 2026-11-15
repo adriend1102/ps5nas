@@ -2576,17 +2576,19 @@ h_spotify_get(req_t *r) {
 static int
 h_spotify_settings(req_t *r) {
   char cid[128], start[16], dir[PATH_MAX], v[16], err[256];
-  int have_cid, have_start, have_dir, interval = -1, enabled = -1;
+  int have_cid, have_start, have_dir, interval = -1, enabled = -1, top_enabled = -1, top_size = -1;
   if(read_body(r)) return send_err(r, 400, "Petición no válida");
   have_cid = !get_param(r->body, "client_id", cid, sizeof(cid));
   have_start = !get_param(r->body, "start", start, sizeof(start));
   have_dir = !get_param(r->body, "music_dir", dir, sizeof(dir));
   if(!get_param(r->body, "interval", v, sizeof(v))) interval = atoi(v);
   if(!get_param(r->body, "enabled", v, sizeof(v))) enabled = !strcmp(v, "1");
+  if(!get_param(r->body, "top_enabled", v, sizeof(v))) top_enabled = !strcmp(v, "1");
+  if(!get_param(r->body, "top_size", v, sizeof(v))) top_size = atoi(v);
   if(have_cid) trim(cid);
   if(have_dir) trim(dir);
   if(spotify_configure(have_cid ? cid : NULL, have_start ? start : NULL, have_dir ? dir : NULL,
-                       interval, enabled, err, sizeof(err))) {
+                       interval, enabled, top_enabled, top_size, err, sizeof(err))) {
     return send_err(r, 400, err);
   }
   return send_ok(r);

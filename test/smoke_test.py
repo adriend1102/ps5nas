@@ -1116,6 +1116,9 @@ check(s == 200 and url.path == "/authorize" and lq.get("client_id") == "abc123" 
       "playlist-modify-private" in lq.get("scope", "") and len(lq.get("state", "")) == 32 and
       "client_secret" not in j["url"], "URL de autorización PKCE correcta")
 sp.challenge = lq.get("code_challenge")
+sp.requested_scope = lq.get("scope", "")
+check("user-top-read" in sp.requested_scope and "user-read-recently-played" in sp.requested_scope,
+      "pide permiso para lo más escuchado")
 cb = "http://127.0.0.1:8888/callback?code=%s&state=%s"
 s, j, _ = admin.req("POST", "/api/admin/spotify/finish", {"url": cb % ("CODE123", "0" * 32)})
 check(s == 400 and "intento anterior" in j.get("error", ""), "estado (state) distinto rechazado")
@@ -1221,7 +1224,7 @@ prev = j["last_sync"]
 time.sleep(1.1)
 admin.req("POST", "/api/admin/spotify/sync")
 st = wait_sync(prev)
-check(st["ok"] and len(sp.playlists) == 3, "tras reiniciar usa el token rotado y no crea playlists de más")
+check(st["ok"] and len([v for v in sp.playlists.values() if v["name"].startswith("pl ")]) == 2, "tras reiniciar usa el token rotado y no crea playlists de más")
 
 del sp.playlists["old10"]
 prev = st["last_sync"]
@@ -1231,6 +1234,71 @@ admin.req("POST", "/api/admin/spotify/sync")
 st = wait_sync(prev)
 names = {v["name"]: v for v in sp.playlists.values()}
 check(st["ok"] and len(names.get("pl 10/2023", {}).get("uris", [])) == 4, "playlist borrada en Spotify: se vuelve a crear")
+
+print("== Spotify: lo más escuchado del mes")
+import calendar, datetime
+now = datetime.datetime.now(datetime.timezone.utc)
+cur = (now.year, now.month)
+prv = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+mstart = calendar.timegm((cur[0], cur[1], 1, 0, 0, 0))
+pend = mstart - 3600
+iso = lambda t, ms=0: time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + (".%03dZ" % ms)
+TK = {k: T("", 5000 + i, "Top " + k, ["Artista " + k]) for i, k in enumerate("ABCDEFGXY")}
+uri = lambda k: TK[k][1]
+plays = [(pend - 300, "X"), (pend - 200, "X"), (pend - 100, "Y")]
+plays += [(mstart + 60 + i * 10, k) for i, k in enumerate("ABACBA")]
+sp.recent = [(iso(t, 123), TK[k]) for t, k in sorted(plays, reverse=True)]
+sp.top = [TK[k] for k in "DAEFG"]
+s, j, _ = admin.req("POST", "/api/admin/spotify/settings", {"top_size": "3"})
+check(s == 400, "top de menos de 5 canciones rechazado")
+s, j, _ = admin.req("POST", "/api/admin/spotify/settings", {"top_size": "5", "top_enabled": "1"})
+check(s == 200, "guardar tamaño del top")
+prev = st["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+time.sleep(1)
+s, st, _ = admin.req("GET", "/api/admin/spotify")
+names = {v["name"]: v for v in sp.playlists.values()}
+tcur = names.get("top %d/%d" % (cur[1], cur[0]), {})
+tprv = names.get("top %d/%d" % (prv[1], prv[0]), {})
+check(st["top_scope_ok"] and st["top_message"] == "OK", "lo más escuchado activo: " + st["top_message"])
+check(tcur.get("uris") == [uri(k) for k in "ABCDE"] and tcur.get("public") is False,
+      "top del mes: por escuchas (A×3, B×2, C×1) y completado con el top de Spotify")
+check(tprv.get("uris") == [uri("X"), uri("Y")], "top del mes anterior con sus escuchas")
+tops = {t["name"]: t for t in st["tops"]}
+tc = tops.get("top %d/%d" % (cur[1], cur[0]), {})
+tp = tops.get("top %d/%d" % (prv[1], prv[0]), {})
+check(tc.get("plays") == 6 and tc.get("n") == 5 and not tc.get("final") and tp.get("final") and tp.get("plays") == 3,
+      "el panel muestra escuchas y cierra el mes anterior")
+hist = open(BASE + "/conf/spotify-plays.tsv").read().splitlines()
+check(len(hist) == 9, "historial de escuchas guardado sin duplicados")
+m3u = MUSIC + "/Listas/Top %04d-%02d %s %d.m3u8"
+MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+check(os.path.exists(m3u % (cur[0], cur[1], MESES[cur[1] - 1], cur[0])), "lista .m3u8 del top")
+puts = sp.puts
+prev = st["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+check(sp.puts == puts, "sin escuchas nuevas: no reescribe las playlists")
+more = [(mstart + 200 + i, "C") for i in range(3)] + [(pend - 50, "Y"), (pend - 40, "Y")]
+sp.recent = [(iso(t), TK[k]) for t, k in sorted(plays + more, reverse=True)]
+prev = st["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+check(tcur["uris"][:3] == [uri("C"), uri("A"), uri("B")], "el mes en curso se actualiza (C×4 pasa primera)")
+check(tprv["uris"] == [uri("X"), uri("Y")], "el mes cerrado ya no cambia")
+sp.scope = "user-library-read playlist-read-private playlist-modify-private"
+sp.access = "AT90"
+prev = st["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+check(st["ok"] and not st["top_scope_ok"] and "Volver a conectar" in st["top_message"],
+      "sin el permiso nuevo: avisa de volver a conectar sin romper lo demás")
+sp.scope = None
 
 sp.revoked = True
 sp.access = "caducado"

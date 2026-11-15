@@ -33,6 +33,15 @@ typedef struct lib_month {
   int  have;
 } lib_month_t;
 
+/* Lista adicional (p. ej. «top 11/2026»): se escribe tal cual, en ese orden. */
+typedef struct lib_list {
+  char               file[96];      /* nombre dentro de Listas/, sin .m3u8 */
+  char               title[64];     /* #PLAYLIST: */
+  const lib_track_t *tracks;
+  int                n;
+  int                have;          /* salida */
+} lib_list_t;
+
 /* Mueve lo que haya en DIR/Entrada a DIR.  Devuelve cuántos archivos movió. */
 int  lib_ingest(const char *dir);
 
@@ -40,7 +49,7 @@ int  lib_ingest(const char *dir);
    orden de añadido) y rellena MONTHS (NMONTHS entradas, ya con ym) con
    cuántas hay y cuántas tienen archivo.  Devuelve 0 o -1 si DIR no existe. */
 int  lib_build(const char *dir, const lib_track_t *tracks, int ntracks,
-               lib_month_t *months, int nmonths);
+               lib_month_t *months, int nmonths, lib_list_t *extra, int nextra);
 
 /* Nombre del mes en español (1-12). */
 const char *lib_month_name(int month);

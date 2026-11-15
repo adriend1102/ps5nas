@@ -12,6 +12,7 @@ class FakeSpotify:
         self.base = f"https://localhost:{port}"
         self.lock = threading.Lock()
         self.challenge = None          # code_challenge del último authorize
+        self.requested_scope = ""      # scope pedido en el último authorize
         self.code = "CODE123"
         self.access = None
         self.refresh = None
@@ -22,6 +23,10 @@ class FakeSpotify:
         self.max_add = 0
         self.throttle_once = True      # un 429 en la primera lectura de me/tracks
         self.next_id = 1
+        self.recent = []               # [(played_at, track)] de la más nueva a la más antigua
+        self.top = []                  # [track] top short_term
+        self.scope = None              # scope que devuelve el servicio de cuentas
+        self.puts = 0
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -61,6 +66,9 @@ class FakeSpotify:
             def do_GET(self):
                 self.route("GET")
 
+            def do_PUT(self):
+                self.route("PUT")
+
             def route(self, method):
                 u = urllib.parse.urlsplit(self.path)
                 qs = dict(urllib.parse.parse_qsl(u.query))
@@ -84,6 +92,16 @@ class FakeSpotify:
                         "track": {"uri": t[1], "name": t[2], "duration_ms": t[5],
                                   "album": {"name": t[4]},
                                   "artists": [{"name": a} for a in t[3]]}})
+                track = lambda t: {"uri": t[1], "name": t[2], "duration_ms": t[5],
+                                   "album": {"name": t[4]}, "artists": [{"name": a} for a in t[3]]}
+                if p == "/v1/me/player/recently-played" and method == "GET":
+                    lim = min(int(qs.get("limit", 20)), 50)
+                    return self.reply(200, {"items": [{"played_at": pa, "track": track(t)} for pa, t in fake.recent[:lim]],
+                                            "next": None, "cursors": None, "limit": lim})
+                if p == "/v1/me/top/tracks" and method == "GET":
+                    if qs.get("time_range") != "short_term":
+                        return self.reply(400, {"error": {"status": 400, "message": "bad range"}})
+                    return self.page(fake.top, qs, 50, p, track)
                 if p == "/v1/me/playlists" and method == "GET":
                     items = [{"id": k, "name": v["name"]} for k, v in fake.playlists.items()]
                     return self.page(items, qs, 50, p, lambda x: x)
@@ -103,6 +121,13 @@ class FakeSpotify:
                     if method == "GET":
                         return self.page(pl["uris"], qs, 100, p, lambda uri: {"item": {"uri": uri}})
                     d = json.loads(self.body())
+                    if method == "PUT":
+                        if len(d["uris"]) > 100:
+                            return self.reply(400, {"error": {"status": 400, "message": "Too many ids"}})
+                        with fake.lock:
+                            pl["uris"] = list(d["uris"])
+                            fake.puts += 1
+                        return self.reply(200, {"snapshot_id": "y"})
                     if len(d["uris"]) > 100:
                         return self.reply(400, {"error": {"status": 400, "message": "Too many ids"}})
                     with fake.lock:
@@ -134,14 +159,17 @@ class FakeSpotify:
                             return self.reply(400, {"error": "invalid_grant", "error_description": "Invalid authorization code"})
                         fake.access, fake.refresh = "AT1", "RT1-" + "x" * 120
                         return self.reply(200, {"access_token": fake.access, "token_type": "Bearer",
-                                                "expires_in": 3600, "refresh_token": fake.refresh})
+                                                "expires_in": 3600, "refresh_token": fake.refresh,
+                                                "scope": fake.scope or fake.requested_scope})
                     if f.get("grant_type") == "refresh_token":
                         if fake.revoked or f.get("refresh_token") != fake.refresh:
                             return self.reply(400, {"error": "invalid_grant", "error_description": "Refresh token revoked"})
                         fake.access = "AT%d" % (int(fake.access[2:]) + 1 if fake.access else 9)
                         fake.refresh = "RT2-" + "y" * 120     # rotación
-                        return self.reply(200, {"access_token": fake.access, "expires_in": 3600,
-                                                "refresh_token": fake.refresh})
+                        out = {"access_token": fake.access, "expires_in": 3600, "refresh_token": fake.refresh}
+                        if fake.scope:
+                            out["scope"] = fake.scope
+                        return self.reply(200, out)
                 return self.reply(400, {"error": "unsupported_grant_type"})
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", port), H)

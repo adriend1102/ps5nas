@@ -487,6 +487,25 @@ conexión a internet y el mismo TLS (wolfSSL) que el correo de recuperación.
 - Usa los endpoints de la Web API vigentes tras los cambios de febrero de 2026
   (`/me/playlists`, `/playlists/{id}/items`).
 
+### Lo más escuchado: «top M/AAAA»
+
+Además, cada mes se mantiene una playlist con tus canciones **más
+escuchadas** (50 por defecto, de 5 a 100), al estilo de Reminiscencefy pero
+calculada en la propia consola:
+
+- La Web API solo da las **50 últimas escuchas**, así que PS5NAS las apunta
+  cada 20 minutos (`spotify-plays.tsv`, guarda ~13 meses) y las cuenta.
+- Si faltan datos (la consola estuvo apagada o el mes acaba de empezar), se
+  completa con el top de las últimas ~4 semanas que calcula Spotify, tomado
+  durante ese mes.
+- El mes en curso se actualiza en cada sincronización; al empezar el
+  siguiente, la lista del mes anterior queda **fija**.
+- También se escribe `Listas/Top 2026-11 Noviembre 2026.m3u8` con los
+  archivos que tengas.
+
+Usa los permisos `user-top-read` y `user-read-recently-played`: si conectaste
+la cuenta antes de esta versión, pulsa **Volver a conectar** una vez.
+
 ### Conectar la cuenta
 
 1. En <https://developer.spotify.com/dashboard> crea una app con **Web API** y
@@ -605,7 +624,7 @@ BW_CLI=$(which bw) ./test/run_tests.sh   # además con la CLI oficial de Bitward
 | `src/smtp.c` | Envío de correos (SMTP con TLS) |
 | `src/net.c` | Conexiones salientes: DNS, TLS de wolfSSL (CA raíz en `src/cacerts.h`) y cliente HTTPS |
 | `src/json.c` | Lector JSON mínimo |
-| `src/spotify.c` | Playlists mensuales: OAuth PKCE, sincronización y `spotify.conf` |
+| `src/spotify.c` | Playlists mensuales y «top»: OAuth PKCE, historial de escuchas, sincronización y `spotify.conf` |
 | `src/library.c` | Carpeta de música: `Entrada`, etiquetas FLAC/MP3 y listas `.m3u8` |
 | `src/tsip.c` | Busca la IP de Tailscale de la consola (API del payload en `:8090`) |
 | `tools/gen-icon.py` | Genera el icono de la app |

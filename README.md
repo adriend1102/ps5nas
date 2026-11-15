@@ -31,7 +31,7 @@
 | 🌐 **Desde internet sin VPN** | Con un servidor gratis (Oracle Cloud) y DuckDNS: HTTPS de verdad y cada app en su propio subdominio tras iniciar sesión en PS5NAS. |
 | 🌍 **Idiomas** | Español, inglés y alemán: la web y la app siguen el idioma del dispositivo y se pueden cambiar. |
 | 📱 **Recordar sesión** | Entra directo desde la consola o el móvil durante 180 días. |
-| 🎵 **Spotify** | Una playlist por mes con tus «Me gusta», automática. Organiza tu música en el USB y crea listas `.m3u8` por playlist. |
+| 🎵 **Spotify** | Una playlist por mes con tus «Me gusta» y otra con lo más escuchado, automáticas. Organiza tu música en el USB y crea listas `.m3u8` por playlist. |
 | 🛰️ **Fuera de casa** | Funciona con [Tailscale para PS5](https://github.com/holdmysocks/ps5-tailscale): la consola es el servidor y la VPN. |
 | 🎮 **App en la pantalla de inicio** | Arranca el servidor, muestra las direcciones (también la IP de Tailscale) y abre el panel. |
 

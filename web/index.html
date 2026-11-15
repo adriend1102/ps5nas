@@ -627,11 +627,19 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
           <code>Entrada</code> (por SFTP o desde «Archivos») y PS5NAS los renombra y coloca solo. En <code>Listas</code> tienes una
           lista <code>.m3u8</code> por playlist y <code>Faltan.txt</code> con las canciones que aún no tienes.</div>
         <label class="check"><input type="checkbox" name="enabled"> Sincronizar automáticamente</label>
+        <label class="check"><input type="checkbox" name="top_enabled"> Crear también «top M/AAAA» con lo más escuchado de cada mes</label>
+        <div class="row">
+          <div style="width:170px"><label class="f" style="margin-top:0">Canciones en el top</label><input type="number" name="top_size" min="5" max="100"></div>
+        </div>
+        <div class="hint">Spotify solo deja ver las 50 últimas escuchas, así que PS5NAS las apunta cada 20 minutos y las
+          cuenta. Si la consola estuvo apagada, completa con el top de las últimas ~4 semanas que calcula Spotify.
+          El mes en curso se actualiza cada vez; al acabar el mes, su lista queda fija.</div>
         <div class="err" id="e-spotify"></div>
         <button class="btn primary">Guardar</button>
       </form>
 
       <div class="card" style="max-width:760px;margin-top:14px" id="sp-months"></div>
+      <div class="card" style="max-width:760px;margin-top:14px" id="sp-tops"></div>
     </section>
 
     <section id="t-settings" class="hidden">
@@ -2186,6 +2194,7 @@ async function loadSpotify(fill){
     const f = $("#f-spotify");
     f.client_id.value = SP.client_id; f.start.value = SP.start; f.interval.value = SP.interval;
     f.music_dir.value = SP.music_dir; f.enabled.checked = SP.enabled;
+    f.top_enabled.checked = SP.top_enabled; f.top_size.value = SP.top_size;
   }
   const box = $("#sp-months"); box.textContent = "";
   if (SP.months.length) {
@@ -2197,6 +2206,25 @@ async function loadSpotify(fill){
     }
     box.append(el("table", {}, el("thead", {}, el("tr", {}, el("th",{},"Mes"), el("th",{},"Playlist"),
       el("th",{},"Canciones"), el("th",{},"En la PS5"))), tb));
+  }
+  const tb2 = $("#sp-tops"); tb2.textContent = "";
+  if (SP.top_enabled && SP.connected) {
+    const head = el("div", {class:"pad", style:"padding-bottom:6px"}, el("h2", {}, "Lo más escuchado"));
+    if (!SP.top_scope_ok) head.append(el("div", {class:"err"}, "Falta permiso de Spotify: pulsa «Volver a conectar»."));
+    else if (SP.top_message && SP.top_message !== "OK") head.append(el("div", {class:"err"}, SP.top_message));
+    else if (SP.hist_at) head.append(el("div", {class:"hint"}, "Historial revisado: " + fmtDate(SP.hist_at)));
+    tb2.append(head);
+    if (SP.tops.length) {
+      const tb = el("tbody", {});
+      for (const t of SP.tops) {
+        const name = t.playlist ? el("a", {href:"https://open.spotify.com/playlist/" + t.playlist, target:"_blank", rel:"noopener"}, t.name) : t.name;
+        tb.append(el("tr", {}, el("td", {}, t.label + (t.final ? "" : " (en curso)")), el("td", {}, name),
+          el("td", {}, String(t.plays)), el("td", {}, String(t.n)),
+          el("td", {class: t.have < t.n ? "" : "okmsg"}, t.have + " / " + t.n)));
+      }
+      tb2.append(el("table", {}, el("thead", {}, el("tr", {}, el("th",{},"Mes"), el("th",{},"Playlist"),
+        el("th",{},"Escuchas apuntadas"), el("th",{},"Canciones"), el("th",{},"En la PS5"))), tb));
+    }
   }
   if (TAB === "spotify") SPT = setTimeout(() => loadSpotify(false), SP.syncing ? 3000 : 20000);
 }
@@ -2235,7 +2263,8 @@ $("#f-spotify").addEventListener("submit", async ev => {
   $("#e-spotify").textContent = "";
   try {
     await api("POST", "/api/admin/spotify/settings", form({client_id:f.client_id.value.trim(), start:f.start.value,
-      interval:f.interval.value, music_dir:f.music_dir.value.trim(), enabled: f.enabled.checked ? "1" : "0"}));
+      interval:f.interval.value, music_dir:f.music_dir.value.trim(), enabled: f.enabled.checked ? "1" : "0",
+      top_enabled: f.top_enabled.checked ? "1" : "0", top_size:f.top_size.value}));
     toast("Guardado");
     loadSpotify(true);
   } catch(e) { $("#e-spotify").textContent = e.message; }

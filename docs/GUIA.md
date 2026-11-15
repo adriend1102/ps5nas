@@ -123,6 +123,13 @@ Tailscale los puertos TCP que estén escuchando en la consola.
 .\instalar-tailscale-ps5.ps1 -PS5 192.168.100.208
 ```
 
+El instalador respeta la versión que ya tenga la consola: si lleva en marcha
+una compilación propia o de un fork (su versión tiene un sufijo, como
+`0.7.3-adrian1`), no la sustituye por la oficial. Para instalar desde un fork,
+`-Repo usuario/ps5-tailscale`; para un `.elf` propio, `-Archivo .\tailscale.elf`;
+para sustituir lo que haya, `-Forzar`. ps5share solo necesita de Tailscale su
+API local (`http://127.0.0.1:8090/api/status`), que tienen todas las versiones.
+
 En la página de estado de Tailscale (`http://192.168.100.208:8090`):
 
 1. Inicia sesión en tu cuenta de Tailscale.
@@ -156,8 +163,9 @@ el FTP de ps5share, donde solo ve sus carpetas.
 
 Los payloads se pierden al reiniciar la consola o salir del modo reposo sin
 jailbreak. Puedes abrir la app PS5NAS después de cada jailbreak, o añadir
-`tailscale.elf` y `ps5nas.elf` (está dentro de la carpeta `assets` de la app)
-a tu cargador automático
+`tailscale.elf` (el que tengas en marcha: el oficial o el de tu fork) y
+`ps5nas.elf` (está dentro de la carpeta `assets` de la app) a tu cargador
+automático
 (el autoloader o gestor de payloads que uses) para que se carguen solos tras
 cada jailbreak. La PS5 no atiende conexiones en modo reposo: tiene que estar
 encendida.

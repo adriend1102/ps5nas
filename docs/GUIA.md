@@ -210,6 +210,62 @@ código…) se pueden **editar y guardar** (Ctrl+S), y **Nuevo archivo** crea un
 También puedes crear carpetas, renombrar, borrar, subir (o arrastrar) y
 descargar. Todo funciona igual en las carpetas privadas cifradas y por SFTP.
 
+## Acceso desde internet sin VPN (Oracle Cloud gratis + DuckDNS)
+
+Con un servidor intermedio gratuito, PS5NAS y las apps que elijas se abren
+desde cualquier sitio con una dirección normal y HTTPS de verdad, sin instalar
+Tailscale en los móviles:
+
+| Dirección | Qué es |
+|---|---|
+| `https://TUNOMBRE.duckdns.org` | PS5NAS (web y gestor de contraseñas: sirve para las apps de Bitwarden sin instalar certificados) |
+| `https://APP.TUNOMBRE.duckdns.org` | cada app publicada; antes pide iniciar sesión en PS5NAS y solo deja pasar a quien tenga permiso |
+| `TUNOMBRE.duckdns.org`, puerto `2222` | SFTP |
+
+La PS5 no abre nada a internet: el servidor entra en tu red de Tailscale y
+llega a ella por ahí. Las contraseñas siguen siendo las de PS5NAS, que bloquea
+los intentos repetidos por IP.
+
+**1. Dominio gratis (DuckDNS).** Entra en <https://www.duckdns.org> con tu
+cuenta de Google, crea un nombre (por ejemplo `tunas`) y apunta el **token**
+que sale arriba.
+
+**2. Servidor gratis (Oracle Cloud «Always Free»).**
+
+1. Crea la cuenta en <https://www.oracle.com/cloud/free/> (piden tarjeta solo
+   para verificar; elige como región una de Europa, p. ej. Madrid o Fráncfort).
+2. *Compute → Instances → Create instance*. Imagen **Ubuntu 24.04**; forma
+   **VM.Standard.A1.Flex** (ARM, gratis) con 1 OCPU y 6 GB, o
+   **VM.Standard.E2.1.Micro**. En *Add SSH keys* pulsa **Save private key**.
+   (Si dice que no hay capacidad, prueba otro *Availability domain* o más tarde.)
+3. Abre los puertos: en la instancia, *Subnet → Default Security List → Add
+   Ingress Rules*: origen `0.0.0.0/0`, TCP, puertos `80,443,2222`.
+4. Apunta la **IP pública** de la instancia.
+
+**3. En PS5NAS:** *Ajustes → Acceso desde internet*: escribe el dominio
+(`tunas.duckdns.org`), marca *Activar* y guarda. Aparecen la clave y el
+comando a ejecutar. Pulsa **Descargar el script del servidor**.
+
+**4. En el servidor**, desde el cmd de Windows (con la clave que guardaste):
+
+```cmd
+scp -i ruta\a\la-clave.key ps5nas-gateway.sh ubuntu@IP_DEL_SERVIDOR:
+ssh -i ruta\a\la-clave.key ubuntu@IP_DEL_SERVIDOR
+```
+
+y dentro, pega el comando de Ajustes cambiando `TU_TOKEN_DUCKDNS` por tu token.
+A mitad te pedirá abrir un enlace para meter el servidor en tu Tailscale.
+
+**5. Publicar apps:** en *Apps*, edita cada una y pon un **subdominio** (p. ej.
+`machete`). En un minuto el servidor la publica en
+`https://machete.tunas.duckdns.org`. Quita el subdominio para dejar de
+publicarla.
+
+Detalles: el servidor pregunta a PS5NAS cada minuto qué publicar
+(`/api/gate/routes`) y, antes de abrir cada app, si la sesión tiene permiso
+(`/api/gate`). Ambas cosas solo responden con la clave de la pasarela. Para
+quitarlo todo del servidor: `sudo bash ps5nas-gateway.sh --uninstall`.
+
 ## Idiomas (español, inglés y alemán)
 
 * **Web:** se abre en el idioma del navegador (español, inglés o alemán; si es

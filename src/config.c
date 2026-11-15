@@ -417,6 +417,13 @@ load_file(const char *path) {
         if(cfg_valid_hostname_list(v) && !strchr(v, ' ') && v[0])
           snprintf(g_settings.vault_domain, sizeof(g_settings.vault_domain), "%s", v);
       }
+      else if(!strcmp(k, "gw_enabled")) g_settings.gw_enabled = atoi(v);
+      else if(!strcmp(k, "gw_domain")) {
+        if(!v[0] || cfg_valid_domain(v))
+          snprintf(g_settings.gw_domain, sizeof(g_settings.gw_domain), "%s", v);
+      }
+      else if(!strcmp(k, "gw_secret") && strlen(v) == 64)
+        snprintf(g_settings.gw_secret, sizeof(g_settings.gw_secret), "%s", v);
       else if(!strcmp(k, "https_enabled")) g_settings.https_enabled = atoi(v);
       else if(!strcmp(k, "https_port")) g_settings.https_port = atoi(v);
       else if(!strcmp(k, "tls_names")) {
@@ -459,6 +466,7 @@ load_file(const char *path) {
       l->all = atoi(fld[2]) != 0;
       snprintf(l->name, sizeof(l->name), "%s", fld[3]);
       snprintf(l->target, sizeof(l->target), "%s", fld[4]);
+      if(n >= 6 && strlen(fld[5]) <= CFG_LINK_SUB) snprintf(l->sub, sizeof(l->sub), "%s", fld[5]);
     } else if(!strcmp(fld[0], "linkuser") && n >= 3) {
       for(int i=0; i<g_nlinks; i++) {
         link_t *l = &g_links[i];
@@ -517,6 +525,9 @@ cfg_save_locked(void) {
   fprintf(f, "set\thttps_enabled\t%d\n", g_settings.https_enabled);
   fprintf(f, "set\thttps_port\t%u\n", g_settings.https_port);
   fprintf(f, "set\ttls_names\t%s\n", g_settings.tls_names);
+  fprintf(f, "set\tgw_enabled\t%d\n", g_settings.gw_enabled);
+  fprintf(f, "set\tgw_domain\t%s\n", g_settings.gw_domain);
+  fprintf(f, "set\tgw_secret\t%s\n", g_settings.gw_secret);
 
   for(int i=0; i<g_nusers; i++) {
     user_t *u = &g_users[i];
@@ -534,7 +545,7 @@ cfg_save_locked(void) {
   }
   for(int i=0; i<g_nlinks; i++) {
     link_t *l = &g_links[i];
-    fprintf(f, "link\t%s\t%d\t%s\t%s\n", l->id, l->all, l->name, l->target);
+    fprintf(f, "link\t%s\t%d\t%s\t%s\t%s\n", l->id, l->all, l->name, l->target, l->sub);
     for(int j=0; j<l->nusers; j++) fprintf(f, "linkuser\t%s\t%s\n", l->id, l->users[j]);
   }
 
@@ -1277,6 +1288,18 @@ cfg_link_save(link_t *in, char *err, size_t errlen) {
     snprintf(err, errlen, "Pon un nombre (máx. %d caracteres)", CFG_LINK_NAME);
     return -1;
   }
+  if(in->sub[0]) {
+    int ok = strlen(in->sub) <= CFG_LINK_SUB && in->sub[0] != '-' && in->sub[strlen(in->sub)-1] != '-';
+    for(const char *p = in->sub; *p && ok; p++) ok = (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '-';
+    if(!ok) {
+      snprintf(err, errlen, "Subdominio no válido: solo minúsculas, números y guiones (máx. %d)", CFG_LINK_SUB);
+      return -1;
+    }
+    if(cfg_link_port(in, NULL, 0) <= 0) {
+      snprintf(err, errlen, "Para publicar una app en internet, su destino tiene que ser un puerto de la consola");
+      return -1;
+    }
+  }
   if(!valid_link_target(in->target)) {
     snprintf(err, errlen, "Destino no válido: pon un puerto (p. ej. 7860 o 8090/ruta) "
              "o una dirección http(s)://...");
@@ -1286,6 +1309,12 @@ cfg_link_save(link_t *in, char *err, size_t errlen) {
   for(int j=0; j<in->nusers; j++) {
     if(!cfg_find_user_locked(in->users[j])) {
       snprintf(err, errlen, "No existe el usuario %s", in->users[j]);
+      goto out;
+    }
+  }
+  for(int i=0; in->sub[0] && i<g_nlinks; i++) {
+    if(!strcmp(g_links[i].sub, in->sub) && strcmp(g_links[i].id, in->id)) {
+      snprintf(err, errlen, "Ese subdominio ya lo usa «%s»", g_links[i].name);
       goto out;
     }
   }
@@ -1329,4 +1358,49 @@ cfg_link_delete(const char *id, char *err, size_t errlen) {
  out:
   cfg_unlock();
   return r;
+}
+
+
+
+int
+cfg_link_port(const link_t *l, char *path, size_t pathlen) {
+  const char *t = l->target;
+  if(*t == ':') t++;
+  long port = 0;
+  const char *p = t;
+  while(*p >= '0' && *p <= '9' && port < 100000) port = port * 10 + (*p++ - '0');
+  if(p == t || port < 1 || port > 65535 || (*p && *p != '/')) return 0;
+  if(path && pathlen) snprintf(path, pathlen, "%s", *p ? p : "/");
+  return (int)port;
+}
+
+
+int
+cfg_link_by_sub(const char *sub, link_t *out) {
+  int r = -1;
+  if(!sub || !sub[0]) return -1;
+  cfg_lock();
+  for(int i=0; i<g_nlinks; i++) {
+    if(!strcmp(g_links[i].sub, sub)) {
+      memcpy(out, &g_links[i], sizeof(*out));
+      r = 0;
+      break;
+    }
+  }
+  cfg_unlock();
+  return r;
+}
+
+
+/* Nombre de dominio con al menos un punto: letras, números, guiones y puntos. */
+int
+cfg_valid_domain(const char *s) {
+  size_t n = strlen(s);
+  if(n < 3 || n > 127 || !strchr(s, '.') || s[0] == '.' || s[n-1] == '.' || s[0] == '-') return 0;
+  for(size_t i=0; i<n; i++) {
+    char c = s[i];
+    if(!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.')) return 0;
+    if(c == '.' && s[i+1] == '.') return 0;
+  }
+  return 1;
 }

@@ -49,6 +49,14 @@ typedef struct req {
   char req_email[256];      /* X-Request-Email (base64url) */
   char device_id[128];      /* X-Device-Identifier */
   char host[256];
+  /* Pasarela pública (servidor intermedio con Caddy) */
+  char gw_hdr[80];          /* X-PS5NAS-Gateway */
+  char fwd_for[64];         /* último X-Forwarded-For */
+  char fwd_proto[8];        /* X-Forwarded-Proto */
+  char fwd_host[256];       /* X-Forwarded-Host */
+  char fwd_uri[2048];       /* X-Forwarded-Uri */
+  int  via_gw;              /* la petición viene de la pasarela (clave correcta) */
+  char alang[3];            /* idioma preferido del navegador (es/en/de) */
 
   char  hdr[HTTP_HDR_MAX];
   size_t hdr_len;      /* bytes leídos en hdr */
@@ -63,6 +71,9 @@ typedef struct req {
   const char *extra_hdr;  /* cabeceras extra para todas las respuestas (CORS) */
 } req_t;
 
+
+/* ¿El cliente usa HTTPS?  (directo, o a través de la pasarela) */
+int  req_https(const req_t *r);
 
 /* E/S de la conexión (TCP o TLS). */
 long req_recv(req_t *r, void *buf, size_t n);

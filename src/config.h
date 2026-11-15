@@ -78,6 +78,10 @@ typedef struct settings {
   int      https_enabled;
   uint16_t https_port;
   char     tls_names[256];        /* nombres o IPs extra para el certificado */
+  /* Acceso desde internet a través de un servidor intermedio (pasarela) */
+  int      gw_enabled;
+  char     gw_domain[128];        /* p. ej. tunas.duckdns.org (las apps: app.tunas.duckdns.org) */
+  char     gw_secret[65];         /* clave compartida con el servidor intermedio */
 } settings_t;
 
 
@@ -85,12 +89,14 @@ typedef struct settings {
 #define CFG_MAX_LINKS   32
 #define CFG_LINK_NAME   60
 #define CFG_LINK_TARGET 255
+#define CFG_LINK_SUB    40
 
 typedef struct link {
   char id[17];                         /* identificador aleatorio */
   char name[CFG_LINK_NAME+1];          /* nombre que se ve */
   char target[CFG_LINK_TARGET+1];      /* "8080", "8080/ruta" o "http(s)://..." */
   int  all;                            /* la ven todos los usuarios */
+  char sub[CFG_LINK_SUB+1];            /* subdominio en la pasarela ("" = sin acceso público) */
   int  nusers;                         /* si no, solo estos */
   char users[CFG_MAX_USERS][CFG_NAME_MAX+1];
 } link_t;
@@ -100,6 +106,11 @@ int  cfg_links(link_t *out, int max, const user_t *user);
 /* Crea (id vacío) o actualiza un acceso; devuelve 0 y deja el id en IN. */
 int  cfg_link_save(link_t *in, char *err, size_t errlen);
 int  cfg_link_delete(const char *id, char *err, size_t errlen);
+/* Busca el acceso con ese subdominio público. */
+int  cfg_link_by_sub(const char *sub, link_t *out);
+/* Puerto local del destino de un acceso ("7860/ruta" -> 7860; 0 si es una URL). */
+int  cfg_link_port(const link_t *l, char *path, size_t pathlen);
+int  cfg_valid_domain(const char *s);
 
 
 /* Inicializa la configuración leyendo DIR/users.conf (lo crea si no existe). */

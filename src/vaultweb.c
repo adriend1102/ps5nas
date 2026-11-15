@@ -187,7 +187,7 @@ h_pw_info(req_t *r) {
     cJSON_AddItemToArray(urls, cJSON_CreateString(u));
   }
   jset(j, "server_urls", urls);
-  jset(j, "secure", cJSON_CreateBool(r->tls));
+  jset(j, "secure", cJSON_CreateBool(req_https(r)));
   return send_cjson(r, j);
 }
 

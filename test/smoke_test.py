@@ -809,6 +809,130 @@ s, j, _ = admin.req("POST", "/api/admin/link/delete", {"id": id_adm})
 s2, j2, _ = admin.req("GET", "/api/links")
 check(s == 200 and len(j2["links"]) == 2, "borrar una app")
 
+print("== Acceso desde internet (pasarela)")
+import http.client, subprocess, tempfile, re as _re
+def raw(method, path, headers=None, body=None):
+    c = http.client.HTTPConnection("127.0.0.1", 8000, timeout=20)
+    c.request(method, path, body=body, headers=headers or {})
+    r = c.getresponse()
+    data = r.read()
+    out = (r.status, data, {k.lower(): v for k, v in r.getheaders()}, r.getheaders())
+    c.close()
+    return out
+s, j, _ = admin.req("POST", "/api/admin/settings", {"gw_enabled": "1", "gw_domain": ""})
+check(s == 400, "activar sin dominio: rechazado")
+s, j, _ = admin.req("POST", "/api/admin/settings", {"gw_domain": "mal dominio", "gw_enabled": "1"})
+check(s == 400, "dominio no válido rechazado")
+st, body, h, _ = raw("GET", "/api/gate?sub=x", {"X-PS5NAS-Gateway": "0" * 64})
+check(st == 403, "pasarela desactivada: no responde")
+s, j, _ = admin.req("POST", "/api/admin/settings", {"gw_domain": "TuNas.DuckDNS.org", "gw_enabled": "1"})
+s2, cfg, _ = admin.req("GET", "/api/admin/settings")
+GW = cfg.get("gw_secret", "")
+check(s == 200 and cfg["gw_enabled"] and cfg["gw_domain"] == "tunas.duckdns.org" and _re.fullmatch(r"[0-9a-f]{64}", GW),
+      "activar la pasarela crea su clave")
+s, j, _ = Web().req("GET", "/api/status")
+check(j.get("gw_domain") == "tunas.duckdns.org", "el estado indica el dominio público")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Router", "target": "http://192.168.1.1/", "sub": "router", "all": "1", "users": ""})
+check(s == 400, "publicar una URL externa: rechazado (solo puertos de la consola)")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Mal", "target": "80", "sub": "mal_sub", "all": "1", "users": ""})
+check(s == 400, "subdominio no válido rechazado")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Machete IA", "target": "7860", "sub": "Machete", "all": "0", "users": "eva"})
+check(s == 200, "app publicada solo para eva (subdominio en minúsculas)")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Chat", "target": "8081/ui", "sub": "chat", "all": "1", "users": ""})
+id_chat = j.get("id")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Otro", "target": "9000", "sub": "chat", "all": "1", "users": ""})
+check(s == 400, "subdominio repetido rechazado")
+admin.req("POST", "/api/admin/link", {"name": "Sin publicar", "target": "9100", "sub": "", "all": "1", "users": ""})
+st, body, h, _ = raw("GET", "/api/gate/routes", {"X-PS5NAS-Gateway": "f" * 64})
+check(st == 403, "rutas con una clave mala: rechazado")
+st, body, h, _ = raw("GET", "/api/gate/routes", {"X-PS5NAS-Gateway": GW})
+routes = json.loads(body)
+check(st == 200 and routes["domain"] == "tunas.duckdns.org" and routes["http_port"] == 8000 and routes["sftp_port"] == 2222
+      and sorted((a["sub"], a["port"]) for a in routes["apps"]) == [("chat", 8081), ("machete", 7860)],
+      "rutas para el servidor: solo las apps con subdominio")
+GWH = {"Accept-Language": "es-ES,es;q=0.9", "X-PS5NAS-Gateway": GW, "X-Forwarded-Proto": "https", "X-Forwarded-Host": "machete.tunas.duckdns.org",
+       "X-Forwarded-Uri": "/ver?a=1&b=2", "Host": "machete.tunas.duckdns.org", "X-Forwarded-For": "203.0.113.7"}
+st, body, h, _ = raw("GET", "/api/gate?sub=machete", GWH)
+loc = h.get("location", "")
+check(st == 302 and loc.startswith("https://tunas.duckdns.org/?next=")
+      and urllib.parse.unquote(loc.split("next=", 1)[1]) == "https://machete.tunas.duckdns.org/ver?a=1&b=2",
+      "sin sesión: a iniciar sesión en PS5NAS y vuelta a la app")
+st, body, h, _ = raw("GET", "/api/gate?sub=nada", GWH)
+check(st == 404, "app no publicada: 404")
+def gw_login(user, pw, ip="203.0.113.7", remember="0"):
+    hdr = {"X-PS5NAS-Gateway": GW, "X-Forwarded-Proto": "https", "Host": "tunas.duckdns.org",
+           "X-Forwarded-For": ip, "X-PS5Share": "1", "Content-Type": "application/x-www-form-urlencoded"}
+    st, body, h, allh = raw("POST", "/api/login", hdr, urllib.parse.urlencode({"user": user, "pass": pw, "remember": remember}))
+    ck = [v for k, v in allh if k.lower() == "set-cookie"]
+    tok = _re.search(r"ps5s=([0-9a-f]+)", ck[0]).group(1) if ck and "ps5s=" in ck[0] else ""
+    return st, (ck[0] if ck else ""), tok
+st, ck, tok_eva = gw_login("eva", "reseteada1")
+check(st == 200 and "Domain=tunas.duckdns.org" in ck and "Secure" in ck,
+      "al entrar por la pasarela, la sesión vale para tunas.duckdns.org y sus apps (cookie Secure)")
+s, j, h = Web().req("POST", "/api/login", {"user": "eva", "pass": "reseteada1"})
+check("Domain=" not in h.get("Set-Cookie", ""), "entrando en casa, la cookie es solo de la consola")
+st, ck2, tok_zoe = gw_login("zoe", "deZoe123")
+st, ck3, tok_adm = gw_login("admin", "adminpass")
+def gate(sub, tok, secret=GW):
+    hh = dict(GWH, **{"X-PS5NAS-Gateway": secret, "Cookie": "otra=1; ps5s=" + tok})
+    return raw("GET", "/api/gate" + q(sub=sub), hh)
+st, body, h, _ = gate("machete", tok_eva)
+check(st == 204 and h.get("x-ps5nas-user") == "eva", "eva entra en su app")
+st, body, h, _ = gate("machete", tok_zoe)
+check(st == 403 and "Sin acceso".encode() in body and "zoe".encode() in body, "zoe no tiene permiso: página de «Sin acceso»")
+st, body, h, _ = raw("GET", "/api/gate?sub=machete", dict(GWH, **{"Accept-Language": "de-DE", "Cookie": "ps5s=" + tok_zoe}))
+check(st == 403 and "Kein Zugriff".encode() in body, "la página de «Sin acceso» sale en el idioma del navegador")
+st, body, h, _ = gate("chat", tok_zoe)
+check(st == 204, "zoe entra en la app de todos")
+st, body, h, _ = gate("machete", tok_adm)
+check(st == 204, "el admin entra en todas")
+st, body, h, _ = gate("machete", tok_eva, secret="0" * 64)
+check(st == 403 and b"pasarela" in body, "sin la clave de la pasarela no se responde")
+st, body, h, _ = gate("machete", "f" * 64)
+check(st == 302, "sesión inventada: a iniciar sesión")
+for i in range(12):
+    gw_login("eva", "mala", ip="198.51.100.66")
+st, _, _ = gw_login("eva", "reseteada1", ip="198.51.100.66")
+check(st == 429, "el bloqueo por intentos usa la IP real del cliente (llega por la pasarela)")
+st, _, _ = gw_login("eva", "reseteada1", ip="198.51.100.67")
+check(st == 200, "y no bloquea a los demás")
+st, body, h, _ = raw("GET", "/api/gate/routes", {"X-PS5NAS-Gateway": GW, "X-Forwarded-For": "198.51.100.66"})
+check(st == 200, "el servidor intermedio sigue sincronizando")
+st, body, h, _ = raw("GET", "/ps5nas-gateway.sh")
+check(st == 200 and body.startswith(b"#!/usr/bin/env bash") and b"ps5nas-gateway-sync" in body, "se descarga el script del servidor")
+
+print("== Script del servidor: sincronización")
+tmpd = tempfile.mkdtemp()
+src = open(os.path.join(os.path.dirname(__file__), "..", "gateway", "ps5nas-gateway.sh")).read()
+sync = src.split("<<'SYNC'\n", 1)[1].split("\nSYNC\n", 1)[0]
+for d in ("bin", "caddy", "systemd", "etc"):
+    os.makedirs(f"{tmpd}/{d}")
+sync = (sync.replace("/etc/ps5nas-gateway/env", f"{tmpd}/etc/env").replace("/etc/caddy/Caddyfile", f"{tmpd}/caddy/Caddyfile")
+            .replace("/etc/systemd/system/", f"{tmpd}/systemd/"))
+open(f"{tmpd}/sync.sh", "w").write(sync)
+open(f"{tmpd}/etc/env", "w").write(f"DOMAIN=tunas.duckdns.org\nPS5=127.0.0.1\nSECRET={GW}\nHTTP_PORT=8000\nSFTP_PUBLIC=2222\nEMAIL=\n")
+for tool in ("caddy", "systemctl", "logger"):
+    open(f"{tmpd}/bin/{tool}", "w").write(f"#!/bin/sh\necho {tool} \"$@\" >> {tmpd}/calls\nexit 0\n")
+    os.chmod(f"{tmpd}/bin/{tool}", 0o755)
+open(f"{tmpd}/bin/install", "w").write("#!/bin/sh\nwhile [ $# -gt 2 ]; do shift; done\ncp \"$1\" \"$2\"\n")
+os.chmod(f"{tmpd}/bin/install", 0o755)
+env = dict(os.environ, PATH=f"{tmpd}/bin:" + os.environ["PATH"])
+r = subprocess.run(["bash", f"{tmpd}/sync.sh"], env=env, capture_output=True, text=True)
+cf = open(f"{tmpd}/caddy/Caddyfile").read() if os.path.exists(f"{tmpd}/caddy/Caddyfile") else ""
+unit = open(f"{tmpd}/systemd/ps5nas-sftp.service").read() if os.path.exists(f"{tmpd}/systemd/ps5nas-sftp.service") else ""
+check(r.returncode == 0 and "tunas.duckdns.org {" in cf and f"header_up X-PS5NAS-Gateway {GW}" in cf,
+      "Caddy: PS5NAS en el dominio principal " + r.stderr[-200:])
+check("machete.tunas.duckdns.org {" in cf and "uri /api/gate?sub=machete" in cf and "reverse_proxy 127.0.0.1:7860" in cf
+      and "chat.tunas.duckdns.org {" in cf and "reverse_proxy 127.0.0.1:8081" in cf and "9100" not in cf,
+      "Caddy: cada app publicada con su control de acceso")
+check("TCP-LISTEN:2222" in unit and "TCP:127.0.0.1:2222" in unit, "SFTP público reenviado a la PS5")
+calls = open(f"{tmpd}/calls").read()
+r2 = subprocess.run(["bash", f"{tmpd}/sync.sh"], env=env, capture_output=True, text=True)
+check(open(f"{tmpd}/calls").read() == calls, "si nada cambia, no se recarga nada")
+admin.req("POST", "/api/admin/link/delete", {"id": id_chat})
+subprocess.run(["bash", f"{tmpd}/sync.sh"], env=env, capture_output=True, text=True)
+check("chat.tunas" not in open(f"{tmpd}/caddy/Caddyfile").read(), "al quitar una app, desaparece del servidor")
+
 print("== Idioma de la app de la consola")
 s, j, _ = Web().req("GET", "/api/status")
 check(s == 200 and j.get("app_lang") == "", "sin elegir: la app usa el idioma de la consola")

@@ -1631,7 +1631,7 @@ static int
 h_config(req_t *r) {
   char base[400];
   const char *host = r->host[0] ? r->host : "localhost";
-  snprintf(base, sizeof(base), "%s://%s", r->tls ? "https" : "http", host);
+  snprintf(base, sizeof(base), "%s://%s", req_https(r) ? "https" : "http", host);
   cJSON *j = cJSON_CreateObject();
   jset_str(j, "version", BW_SERVER_VERSION);
   jset_str(j, "gitHash", VERSION_TAG);

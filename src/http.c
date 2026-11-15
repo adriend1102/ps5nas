@@ -2,7 +2,7 @@
    Copyright (C) 2026  ps5share contributors.  GPLv3, ver LICENSE.
 
    Servidor HTTP/1.1 mínimo (una petición por conexión) con:
-   - Sesiones por cookie (HttpOnly, SameSite=Strict).
+   - Sesiones por cookie (HttpOnly, SameSite=Lax; las peticiones que cambian algo exigen además la cabecera X-PS5Share).
    - Protección CSRF: toda petición que modifica algo exige la cabecera
      "X-PS5Share: 1", que un formulario de otra web no puede enviar.
    - API de archivos (/api/fs/...) limitada al VFS del usuario.
@@ -42,6 +42,7 @@
 #include "log.h"
 #include "vfs.h"
 #include "webui.h"
+#include "gwscript.h"
 
 #define HTTP_MAX_CLIENTS   64
 #define HTTP_TIMEOUT       60
@@ -271,6 +272,26 @@ parse_request(req_t *r) {
       snprintf(r->device_id, sizeof(r->device_id), "%s", val);
     } else if(!strcasecmp(line, "Host")) {
       snprintf(r->host, sizeof(r->host), "%s", val);
+    } else if(!strcasecmp(line, "Accept-Language")) {
+      if(strlen(val) >= 2) {
+        r->alang[0] = (char)(val[0] | 0x20);
+        r->alang[1] = (char)(val[1] | 0x20);
+        r->alang[2] = 0;
+      }
+    } else if(!strcasecmp(line, "X-PS5NAS-Gateway")) {
+      snprintf(r->gw_hdr, sizeof(r->gw_hdr), "%s", val);
+    } else if(!strcasecmp(line, "X-Forwarded-For")) {
+      /* El último salto es el que añadió la pasarela (el cliente real). */
+      const char *last = strrchr(val, ',');
+      last = last ? last + 1 : val;
+      while(*last == ' ') last++;
+      snprintf(r->fwd_for, sizeof(r->fwd_for), "%s", last);
+    } else if(!strcasecmp(line, "X-Forwarded-Proto")) {
+      snprintf(r->fwd_proto, sizeof(r->fwd_proto), "%s", val);
+    } else if(!strcasecmp(line, "X-Forwarded-Host")) {
+      snprintf(r->fwd_host, sizeof(r->fwd_host), "%s", val);
+    } else if(!strcasecmp(line, "X-Forwarded-Uri")) {
+      snprintf(r->fwd_uri, sizeof(r->fwd_uri), "%s", val);
     } else if(!strcasecmp(line, "Cookie")) {
       const char *c = strstr(val, "ps5s=");
       while(c && c != val && c[-1] != ' ' && c[-1] != ';') c = strstr(c + 1, "ps5s=");
@@ -285,6 +306,60 @@ parse_request(req_t *r) {
     }
   }
   return 0;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Pasarela pública                                                    */
+/* ------------------------------------------------------------------ */
+
+int
+req_https(const req_t *r) {
+  return r->tls || (r->via_gw && !strcmp(r->fwd_proto, "https"));
+}
+
+
+/* IP del cliente: la real si llega por la pasarela, si no la del socket.
+   (Por Tailscale todo llega como 127.0.0.1.)  Para IPv6 se usa un resumen. */
+static uint32_t
+req_ip(const req_t *r) {
+  if(r->via_gw && r->fwd_for[0]) {
+    struct in_addr a;
+    if(inet_pton(AF_INET, r->fwd_for, &a) == 1) return a.s_addr;
+    uint32_t h = 2166136261u;
+    for(const char *p = r->fwd_for; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    return h | 1;
+  }
+  return r->peer.sin_addr.s_addr;
+}
+
+
+static void
+req_ip_str(const req_t *r, char *out, size_t outlen) {
+  if(r->via_gw && r->fwd_for[0]) snprintf(out, outlen, "%s", r->fwd_for);
+  else inet_ntop(AF_INET, &r->peer.sin_addr, out, (socklen_t)outlen);
+}
+
+
+/* Atributo Domain para la cookie de sesión cuando se entra por la pasarela:
+   así la misma sesión sirve para las apps (app.dominio). */
+static void
+cookie_domain(const req_t *r, char *out, size_t outlen) {
+  out[0] = 0;
+  if(!r->via_gw) return;
+  char dom[128];
+  cfg_lock();
+  snprintf(dom, sizeof(dom), "%s", cfg_settings()->gw_domain);
+  cfg_unlock();
+  if(!dom[0]) return;
+  char host[256];
+  snprintf(host, sizeof(host), "%s", r->host);
+  char *colon = strchr(host, ':');
+  if(colon) *colon = 0;
+  size_t hl = strlen(host), dl = strlen(dom);
+  if(!strcasecmp(host, dom) || (hl > dl && host[hl-dl-1] == '.' && !strcasecmp(host + hl - dl, dom))) {
+    snprintf(out, outlen, "; Domain=%s", dom);
+  }
 }
 
 
@@ -674,19 +749,20 @@ rl_clear(uint32_t ip) {
 static int
 login_reply(req_t *r, const char *user, const ukey_t *key, int remember) {
   char token[65];
-  char cookie[256];
+  char cookie[512], dom[160];
   sb_t b = {0};
 
+  cookie_domain(r, dom, sizeof(dom));
   session_create(user, key, remember, token);
   if(remember) {
     snprintf(cookie, sizeof(cookie),
-             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict%s; Max-Age=%d\r\n",
-             token, r->tls ? "; Secure" : "", SESSION_TTL_LONG);
+             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Lax%s%s; Max-Age=%d\r\n",
+             token, req_https(r) ? "; Secure" : "", dom, SESSION_TTL_LONG);
   } else {
     /* Cookie de sesión: se borra al cerrar el navegador. */
     snprintf(cookie, sizeof(cookie),
-             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Strict%s\r\n", token,
-             r->tls ? "; Secure" : "");
+             "Set-Cookie: ps5s=%s; Path=/; HttpOnly; SameSite=Lax%s%s\r\n", token,
+             req_https(r) ? "; Secure" : "", dom);
   }
   sb_puts(&b, "{\"ok\":true}");
   return send_json(r, 200, &b, cookie);
@@ -711,6 +787,8 @@ h_status(req_t *r) {
   int vault_on = st->vault_enabled;
   char app_lang[3];
   memcpy(app_lang, st->app_lang, sizeof(app_lang));
+  char gw_domain[128];
+  snprintf(gw_domain, sizeof(gw_domain), "%s", st->gw_enabled ? st->gw_domain : "");
   cfg_unlock();
   tsip_get(ts, sizeof(ts));
   sb_printf(&b, "{\"name\":\"PS5NAS\",\"setup\":%s,\"recover_email\":%s,"
@@ -724,6 +802,8 @@ h_status(req_t *r) {
   sb_json_str(&b, ts);
   sb_puts(&b, ",\"app_lang\":");
   sb_json_str(&b, app_lang);
+  sb_puts(&b, ",\"gw_domain\":");
+  sb_json_str(&b, gw_domain);
   sb_puts(&b, "}");
   return send_json(r, 200, &b, NULL);
 }
@@ -781,7 +861,7 @@ h_setup(req_t *r) {
 static int
 h_login(req_t *r) {
   char user[CFG_NAME_MAX+1], pass[256], rem[8];
-  uint32_t ip = r->peer.sin_addr.s_addr;
+  uint32_t ip = req_ip(r);
 
   if(rl_blocked(ip)) {
     return send_err(r, 429, "Demasiados intentos. Espera unos minutos.");
@@ -815,11 +895,13 @@ h_login(req_t *r) {
 
 static int
 h_logout(req_t *r) {
+  char cookie[256], dom[160];
   if(r->cookie_token[0]) session_destroy(r->cookie_token);
+  cookie_domain(r, dom, sizeof(dom));
+  snprintf(cookie, sizeof(cookie), "Set-Cookie: ps5s=; Path=/; HttpOnly; SameSite=Lax%s; Max-Age=0\r\n", dom);
   sb_t b = {0};
   sb_puts(&b, "{\"ok\":true}");
-  return send_json(r, 200, &b,
-                   "Set-Cookie: ps5s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0\r\n");
+  return send_json(r, 200, &b, cookie);
 }
 
 
@@ -883,7 +965,7 @@ h_me_password(req_t *r) {
 static int
 h_me_email(req_t *r) {
   char pass[256], email[CFG_EMAIL_MAX + 2], err[256];
-  uint32_t ip = r->peer.sin_addr.s_addr;
+  uint32_t ip = req_ip(r);
   if(read_body(r)) return send_err(r, 400, "Petición no válida");
   if(rl_blocked(ip)) return send_err(r, 429, "Demasiados intentos. Espera unos minutos.");
   get_param(r->body, "pass", pass, sizeof(pass));
@@ -911,7 +993,7 @@ typedef struct recov {
   char     id[17];               /* identificador para el administrador */
   char     thash[65];            /* hash del token que guarda el navegador */
   char     user[CFG_NAME_MAX+1];
-  char     ip[INET_ADDRSTRLEN];
+  char     ip[64];
   time_t   created;
   int      state;                /* 0 pendiente, 1 aceptada, 2 rechazada */
 } recov_t;
@@ -979,7 +1061,7 @@ mail_thread(void *p) {
 static int
 h_forgot_email(req_t *r) {
   char user[CFG_NAME_MAX+1], email[CFG_EMAIL_MAX + 2];
-  uint32_t ip = r->peer.sin_addr.s_addr;
+  uint32_t ip = req_ip(r);
   user_t u;
   int recover;
 
@@ -1041,7 +1123,7 @@ h_forgot_email(req_t *r) {
 static int
 h_forgot_request(req_t *r) {
   char user[CFG_NAME_MAX+1], token[65];
-  uint32_t ip = r->peer.sin_addr.s_addr;
+  uint32_t ip = req_ip(r);
   int recover;
   time_t now = time(NULL);
 
@@ -1075,7 +1157,7 @@ h_forgot_request(req_t *r) {
   cfg_random_hex(q->id, 8);
   token_hash(token, q->thash);
   snprintf(q->user, sizeof(q->user), "%s", user);
-  inet_ntop(AF_INET, &r->peer.sin_addr, q->ip, sizeof(q->ip));
+  req_ip_str(r, q->ip, sizeof(q->ip));
   q->created = now;
   pthread_mutex_unlock(&g_recov_lock);
 
@@ -1624,6 +1706,162 @@ h_admin_user_delete(req_t *r) {
 /* Accesos directos a otras webs de la consola (pestaña «Apps»)        */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Pasarela: control de acceso a las apps publicadas (forward_auth)    */
+/* ------------------------------------------------------------------ */
+
+/* Escapa para URL (para el parámetro next=). */
+static void
+url_escape(const char *in, char *out, size_t outlen) {
+  static const char hx[] = "0123456789ABCDEF";
+  size_t o = 0;
+  for(const unsigned char *p = (const unsigned char*)in; *p && o + 4 < outlen; p++) {
+    if((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+       *p == '-' || *p == '_' || *p == '.' || *p == '~' || *p == '/') {
+      out[o++] = (char)*p;
+    } else {
+      out[o++] = '%';
+      out[o++] = hx[*p >> 4];
+      out[o++] = hx[*p & 15];
+    }
+  }
+  out[o] = 0;
+}
+
+
+static void
+html_escape(const char *in, char *out, size_t outlen) {
+  size_t o = 0;
+  for(; *in && o + 7 < outlen; in++) {
+    const char *e = *in == '<' ? "&lt;" : *in == '>' ? "&gt;" : *in == '&' ? "&amp;" :
+                    *in == '"' ? "&quot;" : *in == '\'' ? "&#39;" : NULL;
+    if(e) { memcpy(out + o, e, strlen(e)); o += strlen(e); }
+    else out[o++] = *in;
+  }
+  out[o] = 0;
+}
+
+
+static int
+gate_page(req_t *r, int code, const char *title, const char *msg_raw, const char *dom) {
+  char html[2048], msg[768];
+  html_escape(msg_raw, msg, sizeof(msg));
+  int n = snprintf(html, sizeof(html),
+    "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<title>PS5NAS</title><style>body{font:16px system-ui,sans-serif;background:#f4f5f7;color:#16181d;"
+    "display:grid;place-items:center;min-height:100vh;margin:0}div{background:#fff;border:1px solid #e3e6ec;"
+    "border-radius:12px;padding:24px;max-width:420px}a{color:#2156d6}</style></head><body><div>"
+    "<h2>%s</h2><p>%s</p><p><a href='https://%s/'>PS5NAS</a></p></div></body></html>", title, msg, dom);
+  if(n < 0 || (size_t)n >= sizeof(html)) n = (int)strlen(html);
+  return send_body(r, code, "text/html; charset=utf-8", html, (size_t)n, NULL);
+}
+
+
+/* GET /api/gate?sub=APP  (lo llama Caddy antes de dejar pasar a una app).
+   204 = adelante; 302 = a iniciar sesión; 403 = sin permiso. */
+static int
+h_gate(req_t *r) {
+  char sub[64], dom[128], uname[CFG_NAME_MAX+1];
+  link_t *l;
+  user_t u;
+  ukey_t k;
+
+  if(!r->via_gw) return send_err(r, 403, "Solo para la pasarela");
+  cfg_lock();
+  snprintf(dom, sizeof(dom), "%s", cfg_settings()->gw_domain);
+  cfg_unlock();
+  get_param(r->query, "sub", sub, sizeof(sub));
+  if(!(l = calloc(1, sizeof(*l)))) return send_err(r, 500, "Sin memoria");
+  if(cfg_link_by_sub(sub, l)) {
+    free(l);
+    int en = strcmp(r->alang, "es") && strcmp(r->alang, "de"), de = !strcmp(r->alang, "de");
+    return gate_page(r, 404, de ? "Nicht gefunden" : en ? "Not found" : "No encontrado",
+                     de ? "Diese App ist nicht veröffentlicht." : en ? "This app is not published." :
+                     "Esta app no está publicada.", dom);
+  }
+
+  memset(&k, 0, sizeof(k));
+  if(!r->cookie_token[0] || session_lookup(r->cookie_token, uname, &k) ||
+     cfg_get_user(uname, &u) || !u.enabled || u.must_chpass) {
+    crypt_key_wipe(&k);
+    free(l);
+    /* A iniciar sesión en PS5NAS, y luego de vuelta aquí. */
+    char back[2600], esc[3 * 2600], loc[3 * 2600 + 256];
+    const char *host = r->fwd_host[0] ? r->fwd_host : r->host;
+    snprintf(back, sizeof(back), "https://%s%s", host, r->fwd_uri[0] ? r->fwd_uri : "/");
+    url_escape(back, esc, sizeof(esc));
+    snprintf(loc, sizeof(loc), "Location: https://%s/?next=%s\r\nCache-Control: no-store\r\n", dom, esc);
+    return send_body(r, 302, "text/plain", "", 0, loc);
+  }
+  crypt_key_wipe(&k);
+  link_t *vis = calloc(CFG_MAX_LINKS, sizeof(link_t));
+  int ok = 0;
+  if(vis) {
+    int n = cfg_links(vis, CFG_MAX_LINKS, &u);
+    for(int i=0; i<n; i++) ok |= !strcmp(vis[i].id, l->id);
+    free(vis);
+  }
+  int ret;
+  if(ok) {
+    char hdr[128];
+    snprintf(hdr, sizeof(hdr), "X-PS5NAS-User: %s\r\nCache-Control: no-store\r\n", u.name);
+    ret = send_body(r, 204, "text/plain", "", 0, hdr);
+  } else {
+    char msg[256];
+    if(!strcmp(r->alang, "de")) {
+      snprintf(msg, sizeof(msg), "Der Benutzer „%s“ hat keinen Zugriff auf „%s“. Frag den Administrator.", u.name, l->name);
+      ret = gate_page(r, 403, "Kein Zugriff", msg, dom);
+    } else if(strcmp(r->alang, "es")) {
+      snprintf(msg, sizeof(msg), "The user “%s” has no access to “%s”. Ask the administrator.", u.name, l->name);
+      ret = gate_page(r, 403, "No access", msg, dom);
+    } else {
+      snprintf(msg, sizeof(msg), "El usuario «%s» no tiene acceso a «%s». Pídeselo al administrador.", u.name, l->name);
+      ret = gate_page(r, 403, "Sin acceso", msg, dom);
+    }
+  }
+  free(l);
+  memset(&u, 0, sizeof(u));
+  return ret;
+}
+
+
+/* GET /api/gate/routes  (el servidor intermedio pregunta qué publicar). */
+static int
+h_gate_routes(req_t *r) {
+  settings_t st;
+  char ts[INET_ADDRSTRLEN] = "";
+  if(!r->via_gw) return send_err(r, 403, "Solo para la pasarela");
+  cfg_lock();
+  memcpy(&st, cfg_settings(), sizeof(st));
+  cfg_unlock();
+  tsip_get(ts, sizeof(ts));
+  link_t *ls = calloc(CFG_MAX_LINKS, sizeof(link_t));
+  if(!ls) return send_err(r, 500, "Sin memoria");
+  int n = cfg_links(ls, CFG_MAX_LINKS, NULL);
+  sb_t b = {0};
+  sb_puts(&b, "{\"domain\":");
+  sb_json_str(&b, st.gw_domain);
+  sb_printf(&b, ",\"http_port\":%u,\"sftp_port\":%u,\"ps5\":", st.http_port,
+            st.sftp_enabled ? st.sftp_port : 0);
+  sb_json_str(&b, ts);
+  sb_puts(&b, ",\"apps\":[");
+  int first = 1;
+  for(int i=0; i<n; i++) {
+    int port = cfg_link_port(&ls[i], NULL, 0);
+    if(!ls[i].sub[0] || port <= 0) continue;
+    sb_puts(&b, first ? "" : ",");
+    first = 0;
+    sb_puts(&b, "{\"sub\":");
+    sb_json_str(&b, ls[i].sub);
+    sb_printf(&b, ",\"port\":%d}", port);
+  }
+  sb_puts(&b, "]}");
+  free(ls);
+  memset(&st, 0, sizeof(st));
+  return send_json(r, 200, &b, NULL);
+}
+
+
 static int
 h_links(req_t *r) {
   link_t *ls = calloc(CFG_MAX_LINKS, sizeof(link_t));
@@ -1639,6 +1877,8 @@ h_links(req_t *r) {
     sb_json_str(&b, ls[i].name);
     sb_puts(&b, ",\"target\":");
     sb_json_str(&b, ls[i].target);
+    sb_puts(&b, ",\"sub\":");
+    sb_json_str(&b, ls[i].sub);
     if(r->user.admin) {
       /* Solo el administrador ve a quién se muestra cada acceso. */
       sb_printf(&b, ",\"all\":%s,\"users\":[", ls[i].all ? "true" : "false");
@@ -1679,6 +1919,16 @@ h_admin_link(req_t *r) {
   }
   get_param(r->body, "all", tmp, sizeof(tmp));
   l->all = !strcmp(tmp, "1");
+  {
+    char sub[64] = "";
+    get_param(r->body, "sub", sub, sizeof(sub));
+    for(char *p = sub; *p; p++) if(*p >= 'A' && *p <= 'Z') *p += 32;
+    if(strlen(sub) > CFG_LINK_SUB) {
+      ret = send_err(r, 400, "Subdominio demasiado largo");
+      goto out;
+    }
+    memcpy(l->sub, sub, strlen(sub) + 1);
+  }
   users[0] = 0;
   get_param(r->body, "users", users, CFG_MAX_USERS * (CFG_NAME_MAX + 2) + 1);
   for(char *save = NULL, *t = strtok_r(users, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
@@ -1887,6 +2137,10 @@ h_admin_settings_get(req_t *r) {
   sb_printf(&b, ",\"smtp_port\":%u,\"smtp_pass_set\":%s,\"recover_email\":%s,"
             "\"recover_admin\":%s", s.smtp_port, s.smtp_passenc[0] ? "true" : "false",
             s.recover_email ? "true" : "false", s.recover_admin ? "true" : "false");
+  sb_printf(&b, ",\"gw_enabled\":%s,\"gw_domain\":", s.gw_enabled ? "true" : "false");
+  sb_json_str(&b, s.gw_domain);
+  sb_puts(&b, ",\"gw_secret\":");
+  sb_json_str(&b, s.gw_secret);
   {
     char ts[INET_ADDRSTRLEN] = "";
     tsip_get(ts, sizeof(ts));
@@ -2025,6 +2279,17 @@ h_admin_settings_set(req_t *r) {
       return send_err(r, 400, err);
     }
   }
+  if(!get_param(r->body, "gw_domain", v, sizeof(v))) {
+    for(char *p = v; *p; p++) if(*p >= 'A' && *p <= 'Z') *p += 32;
+    if(v[0] && !cfg_valid_domain(v)) return send_err(r, 400, "Dominio no válido (p. ej. tunas.duckdns.org)");
+    snprintf(s.gw_domain, sizeof(s.gw_domain), "%s", v);
+  }
+  if(!get_param(r->body, "gw_enabled", v, sizeof(v))) s.gw_enabled = !strcmp(v, "1");
+  if((!get_param(r->body, "gw_new_secret", v, sizeof(v)) && !strcmp(v, "1")) ||
+     (s.gw_enabled && strlen(s.gw_secret) != 64)) {
+    cfg_random_hex(s.gw_secret, 32);
+  }
+  if(s.gw_enabled && !s.gw_domain[0]) return send_err(r, 400, "Pon el dominio antes de activar el acceso desde internet");
   if(cfg_update_settings(&s, err, sizeof(err))) return send_err(r, 400, err);
   tls_refresh(0);      /* por si cambiaron los nombres del certificado */
   return send_ok(r);
@@ -2069,6 +2334,8 @@ static const route_t routes[] = {
   {"POST", "/api/admin/user/delete",    h_admin_user_delete,   2},
   {"POST", "/api/admin/user/password",  h_admin_user_password, 2},
   {"GET",  "/api/links",                h_links,               1},
+  {"GET",  "/api/gate",                 h_gate,                0},
+  {"GET",  "/api/gate/routes",          h_gate_routes,         0},
   {"POST", "/api/admin/link",           h_admin_link,          2},
   {"POST", "/api/admin/link/delete",    h_admin_link_delete,   2},
   {"GET",  "/api/admin/requests",       h_admin_requests,      2},
@@ -2096,6 +2363,16 @@ handle(req_t *r) {
     send_err(r, 400, "Petición no válida");
     return;
   }
+  if(r->gw_hdr[0]) {
+    char sec[65];
+    int on;
+    cfg_lock();
+    on = cfg_settings()->gw_enabled;
+    memcpy(sec, cfg_settings()->gw_secret, sizeof(sec));
+    cfg_unlock();
+    r->via_gw = on && strlen(sec) == 64 && cfg_consttime_eq(r->gw_hdr, sec);
+    memset(sec, 0, sizeof(sec));
+  }
 
   if(!strcmp(r->path, "/") || !strcmp(r->path, "/index.html")) {
     if(strcmp(r->method, "GET") && strcmp(r->method, "HEAD")) {
@@ -2111,6 +2388,13 @@ handle(req_t *r) {
   }
   if(!strcmp(r->path, "/favicon.ico")) {
     send_body(r, 204, "text/plain", "", 0, NULL);
+    return;
+  }
+  if(!strcmp(r->path, "/ps5nas-gateway.sh") && !strcmp(r->method, "GET")) {
+    /* Script del servidor intermedio (no lleva secretos). */
+    send_body(r, 200, "text/x-shellscript; charset=utf-8", (const char*)gateway_script,
+              gateway_script_len,
+              "Content-Disposition: attachment; filename=\"ps5nas-gateway.sh\"\r\n");
     return;
   }
   if(!strcmp(r->path, "/ps5nas-ca.crt") && !strcmp(r->method, "GET")) {

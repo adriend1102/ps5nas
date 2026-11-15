@@ -41,7 +41,10 @@ $(BUILD)/libwolf.a: $(WOLF_OBJ)
 src/webui.h: web/index.html tools/embed.py
 	python3 tools/embed.py $< $@
 
-ps5nas.elf: $(SOURCE) src/webui.h $(wildcard src/*.h) $(BUILD)/libwolf.a
+src/gwscript.h: gateway/ps5nas-gateway.sh tools/embed.py
+	python3 tools/embed.py $< $@ gateway_script
+
+ps5nas.elf: $(SOURCE) src/webui.h src/gwscript.h $(wildcard src/*.h) $(BUILD)/libwolf.a
 	$(CC) $(CFLAGS) -o $@ $(SOURCE) $(BUILD)/libwolf.a -lpthread
 
 clean:

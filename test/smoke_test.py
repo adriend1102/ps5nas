@@ -1070,6 +1070,178 @@ check(s == 429, "tras 5 códigos erróneos la cuenta espera aunque el código se
 admin.req("POST", "/api/admin/user/2fa/reset", {"name": "tfa"})
 admin.req("POST", "/api/admin/user/delete", {"name": "tfa"})
 
+print("== Spotify: playlists mensuales y biblioteca")
+import hashlib, struct
+from fake_spotify import FakeSpotify
+sp = FakeSpotify(8444, CA + "/srv.pem", CA + "/srv.key")
+MUSIC = BASE + "/music"
+os.makedirs(MUSIC, exist_ok=True)
+T = lambda d, i, name, artists, album="Álbum", ms=200000: (d, "spotify:track:%022d" % i, name, artists, album, ms)
+sp.liked = [T("2023-09-30T10:00:00Z", 1, "Antes del inicio", ["Nadie"]),
+            T("2023-10-02T10:00:00Z", 2, "Canción de Prueba", ["Álvaro Soler"]),
+            T("2023-10-20T10:00:00Z", 3, "Viejo Tema - 2011 Remaster", ["Grupo X", "Otro"]),
+            T("2023-10-25T10:00:00Z", 4, "Sin Archivo", ["Grupo Z"])]
+sp.liked += [T("2026-11-%02dT%02d:%02d:00Z" % (1 + i // 60, (i // 3) % 24, i % 60), 100 + i, "Tema %d" % i, ["Banda"])
+             for i in range(130)]
+sp.liked.append(T("2026-11-14T08:00:00Z", 99, "Árbol", ["Señorita Ñ"]))
+sp.playlists["old10"] = {"name": "pl 10/2023", "public": True, "uris": ["spotify:track:%022d" % 3]}
+sp.playlists["otra"] = {"name": "Mis favoritas", "public": True, "uris": []}
+
+s, j, _ = Web().req("GET", "/api/admin/spotify")
+check(s == 401, "estado de Spotify requiere sesión")
+s, j, _ = admin.req("GET", "/api/admin/spotify")
+check(s == 200 and j["connected"] is False and j["redirect_uri"] == "http://127.0.0.1:8888/callback",
+      "estado inicial: sin conectar y redirect URI de loopback")
+s, j, _ = admin.req("POST", "/api/admin/spotify/login")
+check(s == 400, "no se puede conectar sin Client ID")
+s, j, _ = admin.req("POST", "/api/admin/spotify/settings", {"client_id": "abc 123"})
+check(s == 400, "Client ID con espacios rechazado")
+s, j, _ = admin.req("POST", "/api/admin/spotify/settings", {"start": "2023-13"})
+check(s == 400, "mes de inicio inválido rechazado")
+s, j, _ = admin.req("POST", "/api/admin/spotify/settings", {"music_dir": "relativa/x"})
+check(s == 400, "carpeta de música relativa rechazada")
+s, j, _ = admin.req("POST", "/api/admin/spotify/settings", {"client_id": "abc123", "start": "2023-10",
+                    "music_dir": MUSIC + "/", "interval": "6", "enabled": "1"})
+check(s == 200, "guardar ajustes de Spotify")
+s, j, _ = admin.req("GET", "/api/admin/spotify")
+check(j["client_id"] == "abc123" and j["start"] == "2023-10" and j["music_dir"] == MUSIC and j["interval"] == 6,
+      "ajustes guardados (sin barra final)")
+
+s, j, _ = admin.req("POST", "/api/admin/spotify/login")
+url = urllib.parse.urlsplit(j.get("url", ""))
+lq = dict(urllib.parse.parse_qsl(url.query))
+check(s == 200 and url.path == "/authorize" and lq.get("client_id") == "abc123" and
+      lq.get("response_type") == "code" and lq.get("code_challenge_method") == "S256" and
+      lq.get("redirect_uri") == "http://127.0.0.1:8888/callback" and "user-library-read" in lq.get("scope", "") and
+      "playlist-modify-private" in lq.get("scope", "") and len(lq.get("state", "")) == 32 and
+      "client_secret" not in j["url"], "URL de autorización PKCE correcta")
+sp.challenge = lq.get("code_challenge")
+cb = "http://127.0.0.1:8888/callback?code=%s&state=%s"
+s, j, _ = admin.req("POST", "/api/admin/spotify/finish", {"url": cb % ("CODE123", "0" * 32)})
+check(s == 400 and "intento anterior" in j.get("error", ""), "estado (state) distinto rechazado")
+s, j, _ = admin.req("POST", "/api/admin/spotify/finish", {"url": "http://127.0.0.1:8888/callback?error=access_denied&state=" + lq["state"]})
+check(s == 400 and "access_denied" in j.get("error", ""), "acceso denegado por el usuario")
+s, j, _ = admin.req("POST", "/api/admin/spotify/finish", {"url": cb % ("MALO", lq["state"])})
+check(s == 400 and "rechaz" in j.get("error", ""), "código incorrecto rechazado")
+s, j, _ = admin.req("POST", "/api/admin/spotify/finish", {"url": "  " + cb % ("CODE123", lq["state"]) + "\n"})
+check(s == 200, "conectar pegando la dirección de vuelta")
+
+
+def wait_sync(prev, t=60):
+    for _ in range(t * 4):
+        s, j, _ = admin.req("GET", "/api/admin/spotify")
+        if not j["syncing"] and j["last_sync"] and j["last_sync"] != prev:
+            return j
+        time.sleep(0.25)
+    return j
+
+
+st = wait_sync(0)
+check(st["connected"] and st["user"] == "Adrián", "cuenta conectada (respuesta chunked de /me)")
+check(st["ok"], "sincronización correcta: " + st["message"])
+p10 = sp.playlists["old10"]["uris"]
+check(p10 == ["spotify:track:%022d" % 3, "spotify:track:%022d" % 2, "spotify:track:%022d" % 4],
+      "adopta «pl 10/2023» existente y añade solo lo que falta, sin duplicar")
+names = {v["name"]: k for k, v in sp.playlists.items()}
+check("pl 9/2023" not in names, "no crea playlists antes del mes de inicio")
+p11 = sp.playlists.get(names.get("pl 11/2026"), {})
+want11 = [x[1] for x in sorted(sp.liked) if x[0].startswith("2026-11")]
+check(p11.get("uris") == want11 and p11.get("public") is False and "Noviembre" in (p11.get("description") or ""),
+      "crea «pl 11/2026» privada con 131 canciones en orden cronológico")
+check(sp.max_add <= 100, "añade en bloques de 100 como máximo")
+check(not any(c[1].endswith("/tracks") and "playlists" in c[1] for c in sp.calls) and
+      not any(c[1].startswith("/v1/users/") for c in sp.calls), "solo usa los endpoints nuevos (items, me/playlists)")
+check([m["name"] for m in st["months"]] == ["pl 11/2026", "pl 10/2023"] and st["months"][0]["total"] == 131,
+      "lista de meses en el panel")
+conf = open(BASE + "/conf/spotify.conf").read()
+check("RT1-" not in conf and "\trefresh\t" in conf, "token de refresco guardado cifrado")
+
+# Biblioteca
+os.makedirs(MUSIC + "/Entrada/Album", exist_ok=True)
+def vc(*kv):
+    v = b"fake"
+    out = struct.pack("<I", len(v)) + v + struct.pack("<I", len(kv))
+    for e in kv:
+        e = e.encode()
+        out += struct.pack("<I", len(e)) + e
+    return out
+vorbis = vc("TITLE=Canción de Prueba", "ARTIST=Álvaro Soler", "ALBUM=x")
+flac = b"fLaC" + bytes([0, 0, 0, 34]) + bytes(34) + bytes([0x84]) + len(vorbis).to_bytes(3, "big") + vorbis + b"\xff\xf8audio"
+open(MUSIC + "/Entrada/Album/01 pista.flac", "wb").write(flac)
+def frame(fid, text):
+    data = b"\x01" + b"\xff\xfe" + text.encode("utf-16-le")
+    return fid.encode() + struct.pack(">I", len(data)) + b"\x00\x00" + data
+tag = frame("TPE1", "Señorita Ñ") + frame("TIT2", "Árbol")
+ss = len(tag)
+mp3 = b"ID3\x03\x00\x00" + bytes([(ss >> 21) & 127, (ss >> 14) & 127, (ss >> 7) & 127, ss & 127]) + tag + b"\xff\xfbmp3"
+open(MUSIC + "/Entrada/track.mp3", "wb").write(mp3)
+open(MUSIC + "/Entrada/Grupo X - Viejo Tema.flac", "wb").write(b"no es flac")
+open(MUSIC + "/Entrada/sin nombre.flac", "wb").write(b"???")
+open(MUSIC + "/Banda - Tema 5.flac", "wb").write(b"ya estaba")
+open(MUSIC + "/Entrada/Banda - Tema 5.flac", "wb").write(b"repetido")
+prev = st["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+check(os.path.exists(MUSIC + "/Álvaro Soler - Canción de Prueba.flac"), "FLAC: etiquetas Vorbis → «Artista - Título.flac»")
+check(os.path.exists(MUSIC + "/Señorita Ñ - Árbol.mp3"), "MP3: etiquetas ID3v2 UTF-16")
+check(os.path.exists(MUSIC + "/Grupo X - Viejo Tema.flac"), "sin etiquetas: usa el nombre del archivo")
+check(not os.path.exists(MUSIC + "/Entrada/Album"), "carpeta de álbum vacía eliminada")
+check(os.path.exists(MUSIC + "/Entrada/sin nombre.flac"), "archivo sin datos se queda en Entrada")
+check(os.path.exists(MUSIC + "/Entrada/_duplicados/Banda - Tema 5.flac") and
+      open(MUSIC + "/Banda - Tema 5.flac", "rb").read() == b"ya estaba", "duplicado apartado sin pisar el original")
+m3u10 = open(MUSIC + "/Listas/2023-10 Octubre 2023.m3u8", encoding="utf-8").read()
+check(m3u10.startswith("#EXTM3U") and "../Álvaro Soler - Canción de Prueba.flac" in m3u10 and
+      "../Grupo X - Viejo Tema.flac" in m3u10 and "# FALTA: Grupo Z - Sin Archivo" in m3u10,
+      "lista .m3u8 de octubre (coincide quitando «- 2011 Remaster»)")
+m3u11 = open(MUSIC + "/Listas/2026-11 Noviembre 2026.m3u8", encoding="utf-8").read()
+check("../Señorita Ñ - Árbol.mp3" in m3u11 and "../Banda - Tema 5.flac" in m3u11, "lista .m3u8 de noviembre")
+falt = open(MUSIC + "/Listas/Faltan.txt", encoding="utf-8").read()
+check("Grupo Z - Sin Archivo" in falt and "Canción de Prueba" not in falt, "Faltan.txt")
+mm = {m["name"]: m for m in st["months"]}
+check(mm["pl 10/2023"]["have"] == 2 and mm["pl 10/2023"]["total"] == 3 and mm["pl 11/2026"]["have"] == 2,
+      "el panel muestra cuántas canciones hay en la PS5")
+adds = sum(1 for c in sp.calls if c[0] == "POST" and c[1].endswith("/items"))
+check(adds == 3, "segunda sincronización sin cambios: no añade nada")
+
+# Canción nueva, token caducado y rotación del token de refresco
+sp.liked.append(T("2026-11-15T09:00:00Z", 999, "Nueva", ["Banda"]))
+sp.access = "AT50"
+prev = st["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+check(st["ok"] and p11["uris"][-1] == "spotify:track:%022d" % 999, "token caducado: lo renueva y añade la canción nueva")
+restart()
+admin = Web()
+admin.req("POST", "/api/login", {"user": "admin", "pass": "adminpass"})
+s, j, _ = admin.req("GET", "/api/admin/spotify")
+check(s == 200 and j["connected"] and len(j["months"]) == 2, "conexión y playlists persisten tras reiniciar")
+prev = j["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+check(st["ok"] and len(sp.playlists) == 3, "tras reiniciar usa el token rotado y no crea playlists de más")
+
+del sp.playlists["old10"]
+prev = st["last_sync"]
+sp.liked.append(T("2023-10-28T09:00:00Z", 998, "Otra", ["Grupo Z"]))
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+names = {v["name"]: v for v in sp.playlists.values()}
+check(st["ok"] and len(names.get("pl 10/2023", {}).get("uris", [])) == 4, "playlist borrada en Spotify: se vuelve a crear")
+
+sp.revoked = True
+sp.access = "caducado"
+prev = st["last_sync"]
+time.sleep(1.1)
+admin.req("POST", "/api/admin/spotify/sync")
+st = wait_sync(prev)
+check(not st["ok"] and not st["connected"] and "vuelve a conectar" in st["message"], "token revocado: pide volver a conectar")
+s, j, _ = admin.req("POST", "/api/admin/spotify/disconnect")
+check(s == 200, "desconectar")
+
 print("== Web: ajustes y página")
 s, j, _ = admin.req("POST", "/api/admin/settings", {"pasv_address": "100.64.1.2"})
 check(s == 200, "guardar IP pasiva")

@@ -364,6 +364,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
       <button data-tab="pw" id="nav-pw" class="hidden">Contraseñas</button>
       <button data-tab="apps" id="nav-apps">Apps</button>
       <button data-tab="users" class="adm">Usuarios<span class="badge hidden" id="reqbadge"></span></button>
+      <button data-tab="spotify" class="adm">Spotify</button>
       <button data-tab="settings" class="adm">Ajustes</button>
     </nav>
     <span class="who hide-sm" id="who"></span>
@@ -587,6 +588,52 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
     </section>
 
     <!-- Ajustes -->
+    <section id="t-spotify" class="hidden">
+      <div class="card pad" style="max-width:760px">
+        <h2>Playlists mensuales de Spotify</h2>
+        <div class="hint">Cada mes se mantiene una playlist «pl M/AAAA» con las canciones que añadiste a
+          <em>Me gusta</em> ese mes. Las playlists con ese nombre que ya tengas se reutilizan; nunca se borra nada.</div>
+        <div id="sp-state" style="margin-top:12px"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn primary" id="sp-sync">Sincronizar ahora</button>
+          <button class="btn" id="sp-connect">Conectar con Spotify</button>
+          <button class="btn" id="sp-disconnect">Desconectar</button>
+        </div>
+        <div id="sp-login" class="hidden" style="margin-top:14px">
+          <div class="hint">1. Se ha abierto Spotify en otra pestaña (si no, <a id="sp-link" target="_blank" rel="noopener">pulsa aquí</a>). Acepta los permisos.<br>
+            2. El navegador irá a una página que no carga (<code>127.0.0.1:8888…</code>). Es normal: copia la dirección completa de esa pestaña y pégala aquí.</div>
+          <div class="row" style="margin-top:8px">
+            <input type="text" id="sp-pasted" class="grow" placeholder="http://127.0.0.1:8888/callback?code=…" style="width:auto">
+            <button class="btn primary" id="sp-finish">Terminar</button>
+          </div>
+        </div>
+        <div class="err" id="e-sp"></div>
+      </div>
+
+      <form class="card pad" id="f-spotify" style="max-width:760px;margin-top:14px">
+        <h2>Ajustes</h2>
+        <label class="f">Client ID de tu app de Spotify</label>
+        <input type="text" name="client_id" autocomplete="off" spellcheck="false" placeholder="32 caracteres">
+        <div class="hint">Créala en <code>developer.spotify.com/dashboard</code> (Web API) y añade esta Redirect URI exacta:
+          <code id="sp-redirect"></code>. No hace falta el Client Secret. En modo desarrollo tu cuenta debe estar en
+          «User Management» y el dueño de la app necesita Premium.</div>
+        <div class="row" style="margin-top:8px">
+          <div class="grow"><label class="f" style="margin-top:0">Desde el mes</label><input type="month" name="start"></div>
+          <div style="width:170px"><label class="f" style="margin-top:0">Comprobar cada (horas)</label><input type="number" name="interval" min="1" max="168"></div>
+        </div>
+        <label class="f">Carpeta de música en la PS5</label>
+        <div class="row"><input type="text" name="music_dir" class="grow" style="width:auto"><button type="button" class="btn" id="sp-pick">Elegir…</button></div>
+        <div class="hint">Aquí van todas las canciones (<code>Artista - Título.flac</code>). Deja archivos nuevos en su subcarpeta
+          <code>Entrada</code> (por SFTP o desde «Archivos») y PS5NAS los renombra y coloca solo. En <code>Listas</code> tienes una
+          lista <code>.m3u8</code> por playlist y <code>Faltan.txt</code> con las canciones que aún no tienes.</div>
+        <label class="check"><input type="checkbox" name="enabled"> Sincronizar automáticamente</label>
+        <div class="err" id="e-spotify"></div>
+        <button class="btn primary">Guardar</button>
+      </form>
+
+      <div class="card" style="max-width:760px;margin-top:14px" id="sp-months"></div>
+    </section>
+
     <section id="t-settings" class="hidden">
       <form class="card pad" id="f-settings" style="max-width:680px">
         <h2>Cómo conectarse</h2>
@@ -1245,8 +1292,10 @@ let TAB = "files";
 function openTab(t){
   TAB = t;
   $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
-  for (const s of ["files","pw","apps","users","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
+  for (const s of ["files","pw","apps","users","spotify","settings"]) $("#t-"+s).classList.toggle("hidden", s !== t);
   if (t === "apps") loadLinks();
+  clearTimeout(SPT);
+  if (t === "spotify") loadSpotify(true);
   if (t === "files") loadDir(CWD);
   if (t === "pw") loadPw();
   if (t === "users") { loadUsers(); pollRequests(); }
@@ -1307,7 +1356,7 @@ function renderList(){
       : (CUR.rw ? "Carpeta vacía. Arrastra archivos aquí para subirlos." : "Carpeta vacía.")));
     return;
   }
-  const tb = el("tbody");
+  const tb = el("tbody", {});
   for (const it of items){
     const p = joinPath(CWD, it.name);
     const acts = el("td", {class:"act"});
@@ -2115,6 +2164,82 @@ $("#b-pwexport").onclick = async () => {
     toast("Exportado. Guárdalo en un sitio seguro y bórralo cuando acabes.");
   } catch(e) { toast(e.message); }
 };
+
+/* ---------- Spotify ---------- */
+let SPT = 0, SP = null;
+async function loadSpotify(fill){
+  clearTimeout(SPT);
+  try { SP = await api("GET", "/api/admin/spotify"); } catch(e) { return toast(e.message); }
+  const st = $("#sp-state"); st.textContent = "";
+  const line = (k, v) => { const d = el("div", {style:"margin-top:4px"}, el("strong", {}, k + ": "), v); st.append(d); return d; };
+  line("Cuenta", SP.connected ? (SP.user || "conectada") : "sin conectar");
+  if (SP.connected && SP.expires) line("Acceso válido hasta", "aprox. " + new Date(SP.expires*1000).toLocaleDateString() + " (luego vuelve a conectar)");
+  const est = line("Estado", SP.syncing ? "sincronizando…" : (SP.message || "—"));
+  if (!SP.ok && !SP.syncing && SP.last_sync) est.className = "err";
+  if (SP.last_sync) line("Última vez", fmtDate(SP.last_sync) + (SP.enabled && SP.connected && !SP.syncing ? " · próxima " + fmtDate(SP.next_sync) : ""));
+  if (!SP.music_ok) line("Carpeta de música", "no existe " + SP.music_dir + " (¿está conectado el USB?)");
+  $("#sp-connect").textContent = SP.connected ? "Volver a conectar" : "Conectar con Spotify";
+  $("#sp-disconnect").classList.toggle("hidden", !SP.connected);
+  $("#sp-sync").disabled = !SP.connected || SP.syncing;
+  $("#sp-redirect").textContent = SP.redirect_uri;
+  if (fill) {
+    const f = $("#f-spotify");
+    f.client_id.value = SP.client_id; f.start.value = SP.start; f.interval.value = SP.interval;
+    f.music_dir.value = SP.music_dir; f.enabled.checked = SP.enabled;
+  }
+  const box = $("#sp-months"); box.textContent = "";
+  if (SP.months.length) {
+    const tb = el("tbody", {});
+    for (const m of SP.months) {
+      const name = m.playlist ? el("a", {href:"https://open.spotify.com/playlist/" + m.playlist, target:"_blank", rel:"noopener"}, m.name) : m.name;
+      tb.append(el("tr", {}, el("td", {}, m.label), el("td", {}, name), el("td", {}, String(m.total)),
+        el("td", {class: m.have < m.total ? "" : "okmsg"}, m.have + " / " + m.total)));
+    }
+    box.append(el("table", {}, el("thead", {}, el("tr", {}, el("th",{},"Mes"), el("th",{},"Playlist"),
+      el("th",{},"Canciones"), el("th",{},"En la PS5"))), tb));
+  }
+  if (TAB === "spotify") SPT = setTimeout(() => loadSpotify(false), SP.syncing ? 3000 : 20000);
+}
+$("#sp-sync").onclick = async () => {
+  try { await api("POST", "/api/admin/spotify/sync"); toast("Sincronizando…"); setTimeout(() => loadSpotify(false), 1500); }
+  catch(e) { toast(e.message); }
+};
+$("#sp-disconnect").onclick = async () => {
+  if (!confirm("¿Desconectar la cuenta de Spotify? Las playlists no se borran.")) return;
+  try { await api("POST", "/api/admin/spotify/disconnect"); loadSpotify(false); } catch(e) { toast(e.message); }
+};
+$("#sp-connect").onclick = async () => {
+  $("#e-sp").textContent = "";
+  const w = window.open("", "_blank");
+  try {
+    const r = await api("POST", "/api/admin/spotify/login");
+    $("#sp-link").href = r.url;
+    if (w) w.location = r.url;
+    $("#sp-login").classList.remove("hidden");
+    $("#sp-pasted").value = ""; $("#sp-pasted").focus();
+  } catch(e) { if (w) w.close(); $("#e-sp").textContent = e.message; }
+};
+$("#sp-finish").onclick = async () => {
+  $("#e-sp").textContent = "";
+  try {
+    await api("POST", "/api/admin/spotify/finish", form({url:$("#sp-pasted").value.trim()}));
+    $("#sp-login").classList.add("hidden");
+    toast("Spotify conectado");
+    loadSpotify(false);
+  } catch(e) { $("#e-sp").textContent = e.message; }
+};
+$("#sp-pick").onclick = () => openPicker($("#f-spotify").music_dir.value || "/mnt", p => { $("#f-spotify").music_dir.value = p; });
+$("#f-spotify").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  $("#e-spotify").textContent = "";
+  try {
+    await api("POST", "/api/admin/spotify/settings", form({client_id:f.client_id.value.trim(), start:f.start.value,
+      interval:f.interval.value, music_dir:f.music_dir.value.trim(), enabled: f.enabled.checked ? "1" : "0"}));
+    toast("Guardado");
+    loadSpotify(true);
+  } catch(e) { $("#e-spotify").textContent = e.message; }
+});
 
 boot();
 </script>

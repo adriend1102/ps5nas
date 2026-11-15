@@ -19,104 +19,13 @@
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
 
-#include "cacerts.h"
 #include "config.h"
 #include "io.h"
 #include "log.h"
+#include "net.h"
 #include "smtp.h"
 
 #define SMTP_TIMEOUT 20
-
-
-/* ------------------------------------------------------------------ */
-/* DNS: getaddrinfo y, si no funciona en la consola, consulta propia    */
-/* ------------------------------------------------------------------ */
-
-static int
-dns_query(const char *server, const char *host, struct in_addr *out) {
-  uint8_t q[512], r[512];
-  size_t n = 0;
-  uint16_t id;
-  cfg_random((uint8_t*)&id, sizeof(id));
-
-  q[n++] = id >> 8; q[n++] = id & 0xff;
-  q[n++] = 0x01; q[n++] = 0x00;                 /* RD */
-  q[n++] = 0; q[n++] = 1; q[n++] = 0; q[n++] = 0;
-  q[n++] = 0; q[n++] = 0; q[n++] = 0; q[n++] = 0;
-  const char *p = host;
-  while(*p) {
-    const char *dot = strchr(p, '.');
-    size_t l = dot ? (size_t)(dot - p) : strlen(p);
-    if(l == 0 || l > 63 || n + l + 6 > sizeof(q)) return -1;
-    q[n++] = (uint8_t)l;
-    memcpy(q + n, p, l);
-    n += l;
-    p += l;
-    if(*p == '.') p++;
-  }
-  q[n++] = 0;
-  q[n++] = 0; q[n++] = 1;   /* A */
-  q[n++] = 0; q[n++] = 1;   /* IN */
-
-  int fd = socket(AF_INET, SOCK_DGRAM, 0);
-  if(fd < 0) return -1;
-  io_sock_timeouts(fd, 4);
-  struct sockaddr_in sa = {0};
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons(53);
-  inet_pton(AF_INET, server, &sa.sin_addr);
-  int ret = -1;
-  for(int attempt = 0; attempt < 2 && ret; attempt++) {
-    if(sendto(fd, q, n, 0, (struct sockaddr*)&sa, sizeof(sa)) != (ssize_t)n) break;
-    ssize_t rn = recv(fd, r, sizeof(r), 0);
-    if(rn < 12 || r[0] != q[0] || r[1] != q[1] || (r[3] & 0x0f)) continue;
-    int qd = (r[4] << 8) | r[5], an = (r[6] << 8) | r[7];
-    size_t o = 12;
-    for(int i=0; i<qd; i++) {               /* salta las preguntas */
-      while(o < (size_t)rn && r[o] && !(r[o] & 0xc0)) o += r[o] + 1;
-      o += (o < (size_t)rn && (r[o] & 0xc0)) ? 2 : 1;
-      o += 4;
-    }
-    for(int i=0; i<an && o < (size_t)rn; i++) {
-      while(o < (size_t)rn && r[o] && !(r[o] & 0xc0)) o += r[o] + 1;
-      o += (o < (size_t)rn && (r[o] & 0xc0)) ? 2 : 1;
-      if(o + 10 > (size_t)rn) break;
-      int type = (r[o] << 8) | r[o+1];
-      int rdlen = (r[o+8] << 8) | r[o+9];
-      o += 10;
-      if(o + rdlen > (size_t)rn) break;
-      if(type == 1 && rdlen == 4) {
-        memcpy(out, r + o, 4);
-        ret = 0;
-        break;
-      }
-      o += rdlen;
-    }
-  }
-  close(fd);
-  return ret;
-}
-
-
-static int
-resolve(const char *host, struct in_addr *out) {
-  if(inet_pton(AF_INET, host, out) == 1) return 0;
-
-  struct addrinfo hints = {0}, *res = NULL;
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  if(!getaddrinfo(host, NULL, &hints, &res) && res) {
-    *out = ((struct sockaddr_in*)res->ai_addr)->sin_addr;
-    freeaddrinfo(res);
-    return 0;
-  }
-  if(res) freeaddrinfo(res);
-  static const char *servers[] = {"1.1.1.1", "8.8.8.8", "9.9.9.9"};
-  for(size_t i=0; i<sizeof(servers)/sizeof(servers[0]); i++) {
-    if(!dns_query(servers[i], host, out)) return 0;
-  }
-  return -1;
-}
 
 
 /* ------------------------------------------------------------------ */
@@ -135,93 +44,8 @@ typedef struct conn {
 
 
 static int
-io_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx) {
-  (void)ssl;
-  int fd = *(int*)ctx;
-  for(;;) {
-    ssize_t n = recv(fd, buf, (size_t)sz, 0);
-    if(n > 0) return (int)n;
-    if(n == 0) return WOLFSSL_CBIO_ERR_CONN_CLOSE;
-    if(errno == EINTR) continue;
-    if(errno == EAGAIN || errno == EWOULDBLOCK) return WOLFSSL_CBIO_ERR_TIMEOUT;
-    return WOLFSSL_CBIO_ERR_GENERAL;
-  }
-}
-
-
-static int
-io_send(WOLFSSL *ssl, char *buf, int sz, void *ctx) {
-  (void)ssl;
-  int fd = *(int*)ctx;
-  for(;;) {
-    ssize_t n = send(fd, buf, (size_t)sz, MSG_NOSIGNAL);
-    if(n >= 0) return (int)n;
-    if(errno == EINTR) continue;
-    if(errno == EAGAIN || errno == EWOULDBLOCK) return WOLFSSL_CBIO_ERR_TIMEOUT;
-    return WOLFSSL_CBIO_ERR_CONN_CLOSE;
-  }
-}
-
-
-static int g_wolf_init = 0;
-
-
-static int
 tls_start(conn_t *c, const char *host) {
-  if(!g_wolf_init) {
-    wolfSSL_Init();
-    g_wolf_init = 1;
-  }
-  if(!(c->ctx = wolfSSL_CTX_new(wolfSSLv23_client_method()))) {
-    snprintf(c->err, c->errlen, "No se pudo preparar TLS");
-    return -1;
-  }
-  wolfSSL_CTX_SetMinVersion(c->ctx, WOLFSSL_TLSV1_2);
-  if(wolfSSL_CTX_load_verify_buffer(c->ctx, (const unsigned char*)CA_CERTS_PEM,
-                                    (long)strlen(CA_CERTS_PEM), WOLFSSL_FILETYPE_PEM)
-     != WOLFSSL_SUCCESS) {
-    snprintf(c->err, c->errlen, "No se pudieron cargar los certificados raíz");
-    return -1;
-  }
-#ifndef __PROSPERO__
-  /* Pruebas locales: CA adicional. */
-  const char *test_ca = getenv("PS5SHARE_TEST_CA");
-  if(test_ca) {
-    FILE *f = fopen(test_ca, "r");
-    if(f) {
-      char pem[8192];
-      size_t n = fread(pem, 1, sizeof(pem), f);
-      fclose(f);
-      wolfSSL_CTX_load_verify_buffer(c->ctx, (unsigned char*)pem, (long)n,
-                                     WOLFSSL_FILETYPE_PEM);
-    }
-  }
-#endif
-  wolfSSL_CTX_set_verify(c->ctx, WOLFSSL_VERIFY_PEER, NULL);
-  wolfSSL_CTX_SetIORecv(c->ctx, io_recv);
-  wolfSSL_CTX_SetIOSend(c->ctx, io_send);
-
-  if(!(c->ssl = wolfSSL_new(c->ctx))) {
-    snprintf(c->err, c->errlen, "No se pudo preparar TLS");
-    return -1;
-  }
-  wolfSSL_SetIOReadCtx(c->ssl, &c->fd);
-  wolfSSL_SetIOWriteCtx(c->ssl, &c->fd);
-  wolfSSL_UseSNI(c->ssl, WOLFSSL_SNI_HOST_NAME, host, (word16)strlen(host));
-  wolfSSL_check_domain_name(c->ssl, host);
-
-  if(wolfSSL_connect(c->ssl) != WOLFSSL_SUCCESS) {
-    int e = wolfSSL_get_error(c->ssl, 0);
-    char es[80];
-    wolfSSL_ERR_error_string_n(e, es, sizeof(es));
-    if(e == ASN_AFTER_DATE_E || e == ASN_BEFORE_DATE_E) {
-      snprintf(c->err, c->errlen, "Certificado del servidor fuera de fecha: revisa la hora de la consola");
-    } else {
-      snprintf(c->err, c->errlen, "Falló la conexión segura con %s (%d: %s)", host, e, es);
-    }
-    return -1;
-  }
-  return 0;
+  return net_tls_start(&c->fd, host, &c->ctx, &c->ssl, c->err, c->errlen);
 }
 
 
@@ -437,25 +261,7 @@ smtp_send(const char *to, const char *subject, const char *body, char *err, size
     snprintf(err, errlen, "Pon el nombre del servidor de correo (p. ej. smtp.gmail.com), no una IP");
     goto out;
   }
-  if(resolve(s.smtp_host, &ip)) {
-    snprintf(err, errlen, "No se encontró el servidor %s (¿hay internet en la consola?)",
-             s.smtp_host);
-    goto out;
-  }
-  struct sockaddr_in sa = {0};
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons(s.smtp_port);
-  sa.sin_addr = ip;
-  if((c.fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-    snprintf(err, errlen, "socket: %s", strerror(errno));
-    goto out;
-  }
-  io_sock_timeouts(c.fd, SMTP_TIMEOUT);
-  if(connect(c.fd, (struct sockaddr*)&sa, sizeof(sa))) {
-    snprintf(err, errlen, "No se pudo conectar con %s:%u (%s)", s.smtp_host, s.smtp_port,
-             strerror(errno));
-    goto out;
-  }
+  if((c.fd = net_connect(s.smtp_host, s.smtp_port, SMTP_TIMEOUT, err, errlen)) < 0) goto out;
 
   int implicit = s.smtp_port == 465;
   if(implicit && tls_start(&c, s.smtp_host)) goto out;
@@ -495,11 +301,7 @@ smtp_send(const char *to, const char *subject, const char *body, char *err, size
 
  out:
   memset(pass, 0, sizeof(pass));
-  if(c.ssl) {
-    wolfSSL_shutdown(c.ssl);
-    wolfSSL_free(c.ssl);
-  }
-  if(c.ctx) wolfSSL_CTX_free(c.ctx);
+  net_tls_close(c.ctx, c.ssl);
   if(c.fd >= 0) close(c.fd);
   if(ret) LOG_PRINTF("ps5share: no se pudo enviar el correo: %s\n", err);
   return ret;

@@ -473,6 +473,54 @@ Solo hay que reinstalar si pulsas **Crear una CA nueva**.
 * **No bloquees el puerto 8443** en Tailscale si quieres usar las apps fuera
   de casa.
 
+## Playlists mensuales de Spotify
+
+PS5NAS puede mantener sola, sin ningún PC, una playlist por mes con las
+canciones que añades a **Me gusta**: «pl 11/2026», «pl 12/2026»… Usa la misma
+conexión a internet y el mismo TLS (wolfSSL) que el correo de recuperación.
+
+- Comprueba cada hora (ajustable). Las playlists con ese nombre que ya
+  existan (las del script antiguo de Python) **se reutilizan**; solo se añade
+  lo que falta y nunca se borra nada. Si borras una playlist en Spotify, se
+  vuelve a crear.
+- Las nuevas se crean **privadas**.
+- Usa los endpoints de la Web API vigentes tras los cambios de febrero de 2026
+  (`/me/playlists`, `/playlists/{id}/items`).
+
+### Conectar la cuenta
+
+1. En <https://developer.spotify.com/dashboard> crea una app con **Web API** y
+   añade esta *Redirect URI* exacta: `http://127.0.0.1:8888/callback`.
+   No necesitas el *Client Secret* (se usa OAuth con PKCE).
+   En modo desarrollo, tu cuenta tiene que estar en *User Management* y el
+   dueño de la app necesita **Premium**.
+2. En el panel: **Spotify → Ajustes**, pega el *Client ID*, elige desde qué
+   mes quieres playlists y guarda.
+3. Pulsa **Conectar con Spotify** y acepta. El navegador terminará en una
+   página que no carga (`127.0.0.1:8888/callback?code=…`): copia esa dirección
+   completa y pégala en el panel.
+
+El permiso de Spotify caduca a los ~6 meses; el panel muestra la fecha y la
+PS5 te avisa con una notificación cuando haya que volver a conectar.
+
+### Carpeta de música
+
+Por defecto `/mnt/usb0/Adrian/Spotify` (se cambia en los ajustes):
+
+| | |
+|---|---|
+| `Artista - Título.flac` | Todas las canciones, juntas en la raíz. |
+| `Entrada/` | Deja aquí archivos nuevos (por SFTP o desde «Archivos»). Cada 5 minutos se leen sus etiquetas (FLAC y MP3; si no tienen, el nombre «Artista - Título»), se renombran y se mueven a la raíz. Los repetidos van a `Entrada/_duplicados`. |
+| `Listas/2026-11 Noviembre 2026.m3u8` | Una lista por playlist con rutas relativas (VLC, Kodi, foobar…). Las que faltan aparecen como `# FALTA: …`. |
+| `Listas/Faltan.txt` | Canciones de las playlists que aún no tienes. |
+
+PS5NAS no descarga música: solo organiza los archivos que tú pones en
+`Entrada` (compras de Qobuz, Bandcamp, 7digital, CD ripeados…).
+
+Si algún día cambia la CA del certificado de Spotify y la conexión falla con
+«No se reconoce la CA», copia su CA raíz en PEM a `ca-extra.pem` dentro de la
+carpeta de configuración.
+
 ## Seguridad
 
 * Contraseñas comprobadas con PBKDF2-SHA256 (20 000 iteraciones, sal
@@ -554,7 +602,11 @@ BW_CLI=$(which bw) ./test/run_tests.sh   # además con la CLI oficial de Bitward
 | `src/vfs.c` | Carpetas virtuales por usuario y bloqueo de escapes |
 | `src/sftp.c` | Servidor SFTP v3 sobre wolfSSH, con el mismo VFS y permisos |
 | `src/crypt.c` | Carpetas privadas: claves, nombres y contenido cifrados |
-| `src/smtp.c` | Envío de correos (SMTP con TLS de wolfSSL, CA raíz en `src/cacerts.h`) |
+| `src/smtp.c` | Envío de correos (SMTP con TLS) |
+| `src/net.c` | Conexiones salientes: DNS, TLS de wolfSSL (CA raíz en `src/cacerts.h`) y cliente HTTPS |
+| `src/json.c` | Lector JSON mínimo |
+| `src/spotify.c` | Playlists mensuales: OAuth PKCE, sincronización y `spotify.conf` |
+| `src/library.c` | Carpeta de música: `Entrada`, etiquetas FLAC/MP3 y listas `.m3u8` |
 | `src/tsip.c` | Busca la IP de Tailscale de la consola (API del payload en `:8090`) |
 | `tools/gen-icon.py` | Genera el icono de la app |
 | `app/` | App de la pantalla de inicio (eboot.bin) |

@@ -36,6 +36,7 @@
 #include "notify.h"
 #include "sha256.h"
 #include "smtp.h"
+#include "spotify.h"
 #include "tsip.h"
 #include "totp.h"
 #include "sftp.h"
@@ -2558,6 +2559,78 @@ h_admin_settings_set(req_t *r) {
 
 
 /* ------------------------------------------------------------------ */
+/* Spotify (solo administradores)                                      */
+/* ------------------------------------------------------------------ */
+
+static int
+h_spotify_get(req_t *r) {
+  sb_t b = {0};
+  char *j = spotify_status_json();
+  if(!j) return send_err(r, 500, "Sin memoria");
+  sb_puts(&b, j);
+  free(j);
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_spotify_settings(req_t *r) {
+  char cid[128], start[16], dir[PATH_MAX], v[16], err[256];
+  int have_cid, have_start, have_dir, interval = -1, enabled = -1;
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  have_cid = !get_param(r->body, "client_id", cid, sizeof(cid));
+  have_start = !get_param(r->body, "start", start, sizeof(start));
+  have_dir = !get_param(r->body, "music_dir", dir, sizeof(dir));
+  if(!get_param(r->body, "interval", v, sizeof(v))) interval = atoi(v);
+  if(!get_param(r->body, "enabled", v, sizeof(v))) enabled = !strcmp(v, "1");
+  if(have_cid) trim(cid);
+  if(have_dir) trim(dir);
+  if(spotify_configure(have_cid ? cid : NULL, have_start ? start : NULL, have_dir ? dir : NULL,
+                       interval, enabled, err, sizeof(err))) {
+    return send_err(r, 400, err);
+  }
+  return send_ok(r);
+}
+
+
+static int
+h_spotify_login(req_t *r) {
+  char url[2048], err[256];
+  sb_t b = {0};
+  if(spotify_login_url(url, sizeof(url), err, sizeof(err))) return send_err(r, 400, err);
+  sb_puts(&b, "{\"url\":");
+  sb_json_str(&b, url);
+  sb_puts(&b, "}");
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_spotify_finish(req_t *r) {
+  char url[4096], err[512];
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(get_param(r->body, "url", url, sizeof(url))) return send_err(r, 400, "Falta la dirección");
+  if(spotify_finish_login(url, err, sizeof(err))) return send_err(r, 400, err);
+  LOG_PRINTF("ps5share: '%s' conectó la cuenta de Spotify\n", r->user.name);
+  return send_ok(r);
+}
+
+
+static int
+h_spotify_sync(req_t *r) {
+  spotify_request_sync();
+  return send_ok(r);
+}
+
+
+static int
+h_spotify_disconnect(req_t *r) {
+  spotify_disconnect();
+  return send_ok(r);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Enrutado                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -2622,6 +2695,12 @@ static const route_t routes[] = {
   {"POST", "/api/pw/folder/delete",     h_pw_folder_delete,    1},
   {"POST", "/api/pw/import",            h_pw_import,           1},
   {"POST", "/api/pw/export",            h_pw_export,           1},
+  {"GET",  "/api/admin/spotify",        h_spotify_get,         2},
+  {"POST", "/api/admin/spotify/settings", h_spotify_settings,  2},
+  {"POST", "/api/admin/spotify/login",  h_spotify_login,       2},
+  {"POST", "/api/admin/spotify/finish", h_spotify_finish,      2},
+  {"POST", "/api/admin/spotify/sync",   h_spotify_sync,        2},
+  {"POST", "/api/admin/spotify/disconnect", h_spotify_disconnect, 2},
 };
 
 

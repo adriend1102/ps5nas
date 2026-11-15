@@ -21,6 +21,9 @@ openssl x509 -req -in "$T/ca/srv.csr" -CA "$T/ca/ca.pem" -CAkey "$T/ca/ca.key" -
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" \
   -keyout "$T/ca/self.key" -out "$T/ca/self.pem" 2>/dev/null
 export PS5SHARE_TEST_CA="$T/ca/ca.pem"
+# Spotify falso (test/fake_spotify.py) en lugar de accounts.spotify.com y api.spotify.com
+export PS5SHARE_SPOTIFY_ACCOUNTS=https://localhost:8444
+export PS5SHARE_SPOTIFY_API=https://localhost:8444
 printf 'set\tftp_enabled\t1\n' > "$T/conf/users.conf"   # las pruebas cubren también FTP
 ./ps5nas-linux -d "$T/conf" > "$T/server.log" 2>&1 &
 echo $! > "$T/server.pid"     # smoke_test.py lo reinicia para probar la persistencia

@@ -19,6 +19,7 @@
 #include "sftp.h"
 #include "tls.h"
 #include "vault.h"
+#include "spotify.h"
 #include "log.h"
 
 
@@ -94,6 +95,8 @@ app_run(const char *confdir, void (*notify_fn)(const char *msg)) {
     if(ip[0]) break;
     sleep(3);
   }
+
+  spotify_init(confdir);
 
   cfg_lock();
   settings_t s = *cfg_settings();

@@ -200,6 +200,30 @@ fi
     --version-script "$native/app-symbols.map" \
     -e _start -o "$build/llvm-pie.elf" "${link_inputs[@]}" \
     --as-needed "$sdk_root"/target/lib/*.so
+# El conversor no alinea bien el segmento RELRO si hay .data.rel.ro (tablas
+# constantes de punteros): la PS5 no arrancaría la app.  Mejor fallar aquí.
+relro_size=$(python3 - "$build/llvm-pie.elf" <<'PYEOF'
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+shoff, = struct.unpack_from('<Q', d, 0x28)
+shentsize, shnum, shstrndx = struct.unpack_from('<HHH', d, 0x3a)
+def sh(i):
+    return struct.unpack_from('<IIQQQQIIQQ', d, shoff + i * shentsize)
+stroff = sh(shstrndx)[4]
+size = 0
+for i in range(shnum):
+    s = sh(i)
+    name = d[stroff + s[0]:d.index(b'\0', stroff + s[0])]
+    if name == b'.data.rel.ro':
+        size = s[5]
+print(size)
+PYEOF
+)
+if [[ $relro_size != 0 ]]; then
+    echo "error: .data.rel.ro no está vacío ($relro_size bytes): quita «const» de las tablas" \
+         "de punteros (p. ej. «const char *const x[]» -> «const char *x[]»)" >&2
+    exit 1
+fi
 "$tool" link --in "$build/llvm-pie.elf" --out "$build/eboot.elf" \
     --stub-dir "$sdk_root/target/lib" --module-sdk "$module_sdk" \
     --companion-sdk "$companion_sdk" --file-name eboot.elf

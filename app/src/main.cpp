@@ -552,7 +552,11 @@ struct Texts
     const char *no_answer;  /* %u */
 };
 
-const Texts texts[lang_count] = {
+/* En .data a propósito: si el compilador deja esta tabla de punteros en
+   .data.rel.ro, el conversor de la plantilla no alinea ese segmento a 16 KB y
+   la consola rechaza el eboot (CE-107750-0 / 0x80AA001A).  tools/build.sh
+   comprueba que .data.rel.ro quede vacío. */
+__attribute__((section(".data.ps5nas_texts"))) Texts texts[lang_count] = {
     {
         "es",
         "TU NAS EN LA PS5: SFTP, WEB, CARPETAS PRIVADAS Y CONTRASENAS",

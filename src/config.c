@@ -1323,11 +1323,56 @@ valid_link_target(const char *t) {
 }
 
 
+/* "100.x.y.z" dentro de 100.64.0.0/10 (direcciones de Tailscale). */
+static int
+tailnet_ip(const char *s, size_t n) {
+  unsigned v[4];
+  char buf[16], tail;
+  if(n == 0 || n >= sizeof(buf)) return 0;
+  memcpy(buf, s, n);
+  buf[n] = 0;
+  if(sscanf(buf, "%u.%u.%u.%u%c", &v[0], &v[1], &v[2], &v[3], &tail) != 4) return 0;
+  for(int i=0; i<4; i++) if(v[i] > 255) return 0;
+  for(const char *p = buf; *p; p++) if(!((*p >= '0' && *p <= '9') || *p == '.')) return 0;
+  return v[0] == 100 && v[1] >= 64 && v[1] <= 127;
+}
+
+
+int
+cfg_link_tailnet(const link_t *l, char *host, size_t hostlen) {
+  const char *t = l->target;
+  if(strncmp(t, "http://", 7)) return 0;
+  t += 7;
+  size_t hn = strcspn(t, ":/");
+  if(!tailnet_ip(t, hn)) return 0;
+  long port = 80;
+  const char *p = t + hn;
+  if(*p == ':') {
+    const char *q = ++p;
+    port = 0;
+    while(*p >= '0' && *p <= '9' && port < 100000) port = port * 10 + (*p++ - '0');
+    if(p == q) return 0;
+  }
+  if(port < 1 || port > 65535 || (*p && *p != '/')) return 0;
+  if(host && hostlen) snprintf(host, hostlen, "%.*s", (int)hn, t);
+  return (int)port;
+}
+
+
 int
 cfg_link_save(link_t *in, char *err, size_t errlen) {
   int r = -1;
   /* Se admite ":8080" escrito con dos puntos delante. */
   if(in->target[0] == ':') memmove(in->target, in->target + 1, strlen(in->target));
+  /* "100.x.y.z:8880" sin http:// -> se le añade. */
+  {
+    size_t hn = strcspn(in->target, ":/");
+    if(in->target[hn] == ':' && tailnet_ip(in->target, hn) &&
+       strlen(in->target) + 7 <= CFG_LINK_TARGET) {
+      memmove(in->target + 7, in->target, strlen(in->target) + 1);
+      memcpy(in->target, "http://", 7);
+    }
+  }
   if(!valid_link_text(in->name, CFG_LINK_NAME)) {
     snprintf(err, errlen, "Pon un nombre (máx. %d caracteres)", CFG_LINK_NAME);
     return -1;
@@ -1339,8 +1384,9 @@ cfg_link_save(link_t *in, char *err, size_t errlen) {
       snprintf(err, errlen, "Subdominio no válido: solo minúsculas, números y guiones (máx. %d)", CFG_LINK_SUB);
       return -1;
     }
-    if(cfg_link_port(in, NULL, 0) <= 0) {
-      snprintf(err, errlen, "Para publicar una app en internet, su destino tiene que ser un puerto de la consola");
+    if(cfg_link_port(in, NULL, 0) <= 0 && cfg_link_tailnet(in, NULL, 0) <= 0) {
+      snprintf(err, errlen, "Para publicar una app en internet, su destino tiene que ser un puerto de la consola "
+               "o una dirección http:// de tu red de Tailscale (p. ej. http://100.x.y.z:8880)");
       return -1;
     }
   }

@@ -843,13 +843,27 @@ id_chat = j.get("id")
 s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Otro", "target": "9000", "sub": "chat", "all": "1", "users": ""})
 check(s == 400, "subdominio repetido rechazado")
 admin.req("POST", "/api/admin/link", {"name": "Sin publicar", "target": "9100", "sub": "", "all": "1", "users": ""})
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Media PC", "target": "100.79.111.7:8880", "sub": "media", "all": "1", "users": ""})
+check(s == 200, "publicar una app de otro equipo de Tailscale (100.x:puerto)")
+s, j, _ = admin.req("GET", "/api/links")
+check(any(l["name"] == "Media PC" and l["target"] == "http://100.79.111.7:8880" for l in j["links"]),
+      "a «100.x.y.z:puerto» se le añade http://")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "TS https", "target": "https://100.79.111.7:8443", "sub": "tshttps", "all": "1", "users": ""})
+check(s == 400, "publicar https:// de Tailscale: rechazado (la pasarela habla http)")
+s, j, _ = admin.req("POST", "/api/admin/link", {"name": "Fuera", "target": "http://100.200.1.1:80", "sub": "fuera", "all": "1", "users": ""})
+check(s == 400, "publicar una IP 100.x fuera del rango de Tailscale: rechazado")
 st, body, h, _ = raw("GET", "/api/gate/routes", {"X-PS5NAS-Gateway": "f" * 64})
 check(st == 403, "rutas con una clave mala: rechazado")
 st, body, h, _ = raw("GET", "/api/gate/routes", {"X-PS5NAS-Gateway": GW})
 routes = json.loads(body)
 check(st == 200 and routes["domain"] == "tunas.duckdns.org" and routes["http_port"] == 8000 and routes["sftp_port"] == 2222
       and sorted((a["sub"], a["port"]) for a in routes["apps"]) == [("chat", 8081), ("machete", 7860)],
-      "rutas para el servidor: solo las apps con subdominio")
+      "rutas para el servidor: solo las apps con subdominio (pasarela antigua: sin las de otros equipos)")
+st, body, h, _ = raw("GET", "/api/gate/routes?v=2", {"X-PS5NAS-Gateway": GW})
+routes2 = json.loads(body)
+check(st == 200 and sorted((a["sub"], a["port"], a.get("host", "")) for a in routes2["apps"])
+      == [("chat", 8081, ""), ("machete", 7860, ""), ("media", 8880, "100.79.111.7")],
+      "rutas v2: incluye la app del PC con su host de Tailscale")
 GWH = {"Accept-Language": "es-ES,es;q=0.9", "X-PS5NAS-Gateway": GW, "X-Forwarded-Proto": "https", "X-Forwarded-Host": "machete.tunas.duckdns.org",
        "X-Forwarded-Uri": "/ver?a=1&b=2", "Host": "machete.tunas.duckdns.org", "X-Forwarded-For": "203.0.113.7"}
 st, body, h, _ = raw("GET", "/api/gate?sub=machete", GWH)
@@ -925,6 +939,8 @@ check(r.returncode == 0 and "tunas.duckdns.org {" in cf and f"header_up X-PS5NAS
 check("machete.tunas.duckdns.org {" in cf and "uri /api/gate?sub=machete" in cf and "reverse_proxy 127.0.0.1:7860" in cf
       and "chat.tunas.duckdns.org {" in cf and "reverse_proxy 127.0.0.1:8081" in cf and "9100" not in cf,
       "Caddy: cada app publicada con su control de acceso")
+check("media.tunas.duckdns.org {" in cf and "uri /api/gate?sub=media" in cf and "reverse_proxy 100.79.111.7:8880" in cf,
+      "Caddy: la app del PC va a su IP de Tailscale, con el mismo control de acceso")
 check("TCP-LISTEN:2222" in unit and "TCP:127.0.0.1:2222" in unit, "SFTP público reenviado a la PS5")
 calls = open(f"{tmpd}/calls").read()
 r2 = subprocess.run(["bash", f"{tmpd}/sync.sh"], env=env, capture_output=True, text=True)

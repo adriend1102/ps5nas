@@ -291,6 +291,16 @@ A mitad te pedirá abrir un enlace para meter el servidor en tu Tailscale.
 `https://machete.tunas.duckdns.org`. Quita el subdominio para dejar de
 publicarla.
 
+También se pueden publicar webs de **otro equipo de tu red de Tailscale** (por
+ejemplo un PC con Jellyfin): pon como destino su IP de Tailscale y el puerto,
+`http://100.x.y.z:8096` (o solo `100.x.y.z:8096`). El servidor intermedio llega
+a ese equipo directamente por Tailscale, con el mismo inicio de sesión de
+PS5NAS delante. Si instalaste la pasarela antes de esta versión, vuelve a
+ejecutar en el servidor `sudo bash ps5nas-gateway.sh` (sin opciones: recuerda
+las de la primera vez) con el script nuevo; hasta entonces, esas apps
+simplemente no se publican. En ese equipo, permite en su cortafuegos el puerto
+para las conexiones que llegan por Tailscale.
+
 Detalles: el servidor pregunta a PS5NAS cada minuto qué publicar
 (`/api/gate/routes`) y, antes de abrir cada app, si la sesión tiene permiso
 (`/api/gate`). Ambas cosas solo responden con la clave de la pasarela. Para

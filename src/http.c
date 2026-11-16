@@ -2087,12 +2087,17 @@ h_gate(req_t *r) {
 }
 
 
-/* GET /api/gate/routes  (el servidor intermedio pregunta qué publicar). */
+/* GET /api/gate/routes  (el servidor intermedio pregunta qué publicar).
+   Con ?v=2 (pasarelas que lo entienden) incluye también las apps de otros
+   equipos de la red de Tailscale, con su "host"; las pasarelas antiguas no las
+   reciben, así nunca las mandan por error a la PS5. */
 static int
 h_gate_routes(req_t *r) {
   settings_t st;
-  char ts[INET_ADDRSTRLEN] = "";
+  char ts[INET_ADDRSTRLEN] = "", ver[8] = "";
   if(!r->via_gw) return send_err(r, 403, "Solo para la pasarela");
+  get_param(r->query, "v", ver, sizeof(ver));
+  int v2 = atoi(ver) >= 2;
   cfg_lock();
   memcpy(&st, cfg_settings(), sizeof(st));
   cfg_unlock();
@@ -2109,13 +2114,20 @@ h_gate_routes(req_t *r) {
   sb_puts(&b, ",\"apps\":[");
   int first = 1;
   for(int i=0; i<n; i++) {
+    char host[INET_ADDRSTRLEN] = "";
     int port = cfg_link_port(&ls[i], NULL, 0);
+    if(port <= 0 && v2) port = cfg_link_tailnet(&ls[i], host, sizeof(host));
     if(!ls[i].sub[0] || port <= 0) continue;
     sb_puts(&b, first ? "" : ",");
     first = 0;
     sb_puts(&b, "{\"sub\":");
     sb_json_str(&b, ls[i].sub);
-    sb_printf(&b, ",\"port\":%d}", port);
+    sb_printf(&b, ",\"port\":%d", port);
+    if(host[0]) {
+      sb_puts(&b, ",\"host\":");
+      sb_json_str(&b, host);
+    }
+    sb_puts(&b, "}");
   }
   sb_puts(&b, "]}");
   free(ls);

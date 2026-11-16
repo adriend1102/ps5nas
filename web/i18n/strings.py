@@ -580,8 +580,9 @@ STRINGS = [
     ("Pon el dominio antes de activar el acceso desde internet", "Enter the domain before enabling internet access", "Gib die Domain ein, bevor du den Internetzugriff aktivierst"),
     ("Dominio no válido (p. ej. tunas.duckdns.org)", "Invalid domain (e.g. yournas.duckdns.org)", "Ungültige Domain (z. B. deinnas.duckdns.org)"),
     ("Subdominio demasiado largo", "Subdomain too long", "Subdomain zu lang"),
-    ("Para publicar una app en internet, su destino tiene que ser un puerto de la consola", "To publish an app on the internet, its destination must be a console port",
-     "Um eine App im Internet zu veröffentlichen, muss ihr Ziel ein Port der Konsole sein"),
+    ("Para publicar una app en internet, su destino tiene que ser un puerto de la consola o una dirección http:// de tu red de Tailscale (p. ej. http://100.x.y.z:8880)",
+     "To publish an app on the internet, its destination must be a console port or an http:// address on your Tailscale network (e.g. http://100.x.y.z:8880)",
+     "Um eine App im Internet zu veröffentlichen, muss ihr Ziel ein Port der Konsole oder eine http://-Adresse in deinem Tailscale-Netz sein (z. B. http://100.x.y.z:8880)"),
     ("Solo para la pasarela", "Gateway only", "Nur für das Gateway"),
     # --- verificación en dos pasos y contraseñas de aplicación -----------------
     ("Verificar", "Verify", "Bestätigen"),

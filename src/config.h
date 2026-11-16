@@ -134,6 +134,10 @@ int  cfg_link_delete(const char *id, char *err, size_t errlen);
 int  cfg_link_by_sub(const char *sub, link_t *out);
 /* Puerto local del destino de un acceso ("7860/ruta" -> 7860; 0 si es una URL). */
 int  cfg_link_port(const link_t *l, char *path, size_t pathlen);
+/* Si el destino es "http://100.x.y.z:PUERTO[/ruta]" (un equipo de tu red de
+   Tailscale, que la pasarela alcanza), deja la IP en HOST y devuelve el puerto;
+   si no, 0. */
+int  cfg_link_tailnet(const link_t *l, char *host, size_t hostlen);
 int  cfg_valid_domain(const char *s);
 
 

@@ -159,7 +159,7 @@ cat > /usr/local/bin/ps5nas-gateway-sync <<'SYNC'
 # Pregunta a PS5NAS qué publicar y rehace la configuración de Caddy y el SFTP.
 set -uo pipefail
 . /etc/ps5nas-gateway/env
-routes=$(curl -fsS -m 15 -H "X-PS5NAS-Gateway: $SECRET" "http://$PS5:$HTTP_PORT/api/gate/routes") || exit 0
+routes=$(curl -fsS -m 15 -H "X-PS5NAS-Gateway: $SECRET" "http://$PS5:$HTTP_PORT/api/gate/routes?v=2") || exit 0
 echo "$routes" | jq -e .domain >/dev/null 2>&1 || exit 0
 
 tmp=$(mktemp)
@@ -175,15 +175,21 @@ tmp=$(mktemp)
   echo "		flush_interval -1"
   echo "	}"
   echo "}"
-  echo "$routes" | jq -r '.apps[] | "\(.sub) \(.port)"' | while read -r sub port; do
+  echo "$routes" | jq -r '.apps[] | "\(.sub) \(.port) \(.host // "")"' | while read -r sub port host; do
     [[ "$sub" =~ ^[a-z0-9-]+$ && "$port" =~ ^[0-9]+$ ]] || continue
+    # Apps de otro equipo de la red de Tailscale (p. ej. un PC); si no, la PS5.
+    target=$PS5
+    if [ -n "$host" ]; then
+      [[ "$host" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+      target=$host
+    fi
     echo
     echo "$sub.$DOMAIN {"
     echo "	forward_auth $PS5:$HTTP_PORT {"
     echo "		uri /api/gate?sub=$sub"
     echo "		header_up X-PS5NAS-Gateway $SECRET"
     echo "	}"
-    echo "	reverse_proxy $PS5:$port {"
+    echo "	reverse_proxy $target:$port {"
     echo "		flush_interval -1"
     echo "	}"
     echo "}"

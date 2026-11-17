@@ -281,6 +281,8 @@ parse_request(req_t *r) {
         r->alang[1] = (char)(val[1] | 0x20);
         r->alang[2] = 0;
       }
+    } else if(!strcasecmp(line, "X-PS5NAS-Module")) {
+      snprintf(r->mod_hdr, sizeof(r->mod_hdr), "%s", val);
     } else if(!strcasecmp(line, "X-PS5NAS-Gateway")) {
       snprintf(r->gw_hdr, sizeof(r->gw_hdr), "%s", val);
     } else if(!strcasecmp(line, "X-Forwarded-For")) {
@@ -2677,6 +2679,86 @@ h_fan_settings(req_t *r) {
 
 
 /* ------------------------------------------------------------------ */
+/* Módulos de la consola (descargas, etc.): inicio de sesión común     */
+/* ------------------------------------------------------------------ */
+
+/* Los módulos (otros payloads) no tienen usuarios propios: reenvían aquí la
+   cookie de PS5NAS del navegador (las cookies valen para cualquier puerto
+   de la misma dirección) junto con la clave de CONFDIR/module.key, que solo
+   pueden leer los programas de la consola.  Responde 204 y el usuario si
+   puede usar el módulo del puerto PORT: los administradores siempre; los
+   demás, si tienen en «Apps» un acceso a ese puerto. */
+
+static char g_modkey[65];
+
+void
+http_module_key_init(const char *confdir) {
+  char path[PATH_MAX];
+  FILE *f;
+  snprintf(path, sizeof(path), "%s/module.key", confdir);
+  if((f = fopen(path, "r"))) {
+    if(fgets(g_modkey, sizeof(g_modkey), f)) g_modkey[strcspn(g_modkey, "\r\n")] = 0;
+    fclose(f);
+  }
+  if(strlen(g_modkey) == 64) return;
+  cfg_random_hex(g_modkey, 32);
+  char tmp[PATH_MAX + 8];
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  if((f = fopen(tmp, "w"))) {
+    fprintf(f, "%s\n", g_modkey);
+    if(!fclose(f)) {
+      chmod(tmp, 0600);
+      rename(tmp, path);
+      return;
+    }
+  }
+  LOG_PUTS("ps5share: no se pudo guardar module.key");
+}
+
+
+static int
+h_module_check(req_t *r) {
+  char v[16], uname[CFG_NAME_MAX+1];
+  user_t u;
+  ukey_t k;
+  if(strlen(g_modkey) != 64 || !cfg_consttime_eq(r->mod_hdr, g_modkey))
+    return send_err(r, 403, "Solo para los módulos de la consola");
+  get_param(r->query, "port", v, sizeof(v));
+  int port = atoi(v);
+  if(port <= 0 || port > 65535) return send_err(r, 400, "Puerto no válido");
+
+  memset(&k, 0, sizeof(k));
+  if(!r->cookie_token[0] || session_lookup(r->cookie_token, uname, &k) ||
+     cfg_get_user(uname, &u) || !u.enabled || u.must_chpass) {
+    crypt_key_wipe(&k);
+    return send_err(r, 401, "Sesión no válida o caducada");
+  }
+  crypt_key_wipe(&k);
+  int ok = u.admin;
+  if(!ok) {
+    link_t *vis = calloc(CFG_MAX_LINKS, sizeof(link_t));
+    if(!vis) return send_err(r, 500, "Sin memoria");
+    int n = cfg_links(vis, CFG_MAX_LINKS, &u);
+    for(int i=0; i<n && !ok; i++) {
+      const char *t = vis[i].target;
+      if(!strncmp(t, "http://", 7) || !strncmp(t, "https://", 8)) continue;
+      ok = atoi(t) == port;
+    }
+    free(vis);
+  }
+  if(!ok) {
+    memset(&u, 0, sizeof(u));
+    return send_err(r, 403, "Solo para administradores");
+  }
+  char hdr[160];
+  snprintf(hdr, sizeof(hdr), "X-PS5NAS-User: %s\r\nX-PS5NAS-Admin: %d\r\nCache-Control: no-store\r\n",
+           u.name, u.admin ? 1 : 0);
+  memset(&u, 0, sizeof(u));
+  return send_body(r, 204, "text/plain", "", 0, hdr);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Enrutado                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -2748,6 +2830,7 @@ static const route_t routes[] = {
   {"POST", "/api/admin/spotify/sync",   h_spotify_sync,        2},
   {"POST", "/api/admin/spotify/disconnect", h_spotify_disconnect, 2},
   {"GET",  "/api/admin/fan",            h_fan_get,             2},
+  {"GET",  "/api/module/check",         h_module_check,        0},
   {"POST", "/api/admin/fan",            h_fan_settings,        2},
 };
 

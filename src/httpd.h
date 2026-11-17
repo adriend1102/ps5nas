@@ -50,7 +50,8 @@ typedef struct req {
   char device_id[128];      /* X-Device-Identifier */
   char host[256];
   /* Pasarela pública (servidor intermedio con Caddy) */
-  char gw_hdr[80];          /* X-PS5NAS-Gateway */
+  char gw_hdr[80];
+  char mod_hdr[80];         /* X-PS5NAS-Module (módulos de la consola) */          /* X-PS5NAS-Gateway */
   char fwd_for[64];         /* último X-Forwarded-For */
   char fwd_proto[8];        /* X-Forwarded-Proto */
   char fwd_host[256];       /* X-Forwarded-Host */

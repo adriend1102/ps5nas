@@ -814,6 +814,8 @@ STRINGS = [
      "Die Konsole beschleunigt den Lüfter, wenn sie sich ihrem Temperatur-„Ziel“ nähert (ab Werk 91 °C). Beim automatischen Schutz senkt PS5NAS dieses Ziel, wenn CPU oder Chip die Grenze überschreiten, damit der Lüfter früher anläuft; liegt die Temperatur eine Minute lang 8 °C darunter, wird der vorherige Wert wiederhergestellt. Ein niedrigeres Ziel bedeutet nur mehr Geräusch: Es wird nie über den Werkswert gesetzt. Steuert eine andere App (Machete IA, Breeze…) den Lüfter, kämpft PS5NAS nicht dagegen an. Beim Öffnen oder Schließen eines Spiels lädt die Konsole ihren Wert neu und PS5NAS wendet ihn erneut an."),
     ("Modo no válido", "Invalid mode", "Ungültiger Modus"),
     ("Temperaturas no válidas", "Invalid temperatures", "Ungültige Temperaturen"),
+    ("Solo para los módulos de la consola", "Only for the console's modules", "Nur für die Module der Konsole"),
+    ("Puerto no válido", "Invalid port", "Ungültiger Port"),
 ]
 
 # (regex sobre el español, inglés, alemán).  $1, $2... = partes variables.

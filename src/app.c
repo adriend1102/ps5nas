@@ -99,6 +99,7 @@ app_run(const char *confdir, void (*notify_fn)(const char *msg)) {
 
   spotify_init(confdir);
   fan_init(confdir);
+  http_module_key_init(confdir);
 
   cfg_lock();
   settings_t s = *cfg_settings();

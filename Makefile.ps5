@@ -21,7 +21,7 @@ include third_party/wolf.mk
 CFLAGS := -Wall -Werror -O2 -DVERSION_TAG=\"$(VERSION_TAG)\" -Isrc \
           -DWOLFSSL_USER_SETTINGS -I$(WOLF_DIR) -I$(WOLF_DIR)/wolfssl -I$(WOLF_DIR)/wolfssh -I$(WOLF_DIR)/cjson
 
-SOURCE := src/app.c src/config.c src/vfs.c src/crypt.c src/ftp.c src/http.c src/sftp.c src/io.c src/smtp.c src/tsip.c src/tls.c src/bwcrypto.c src/vault.c src/vaultweb.c src/net.c src/json.c src/library.c src/spotify.c
+SOURCE := src/app.c src/config.c src/vfs.c src/crypt.c src/ftp.c src/http.c src/sftp.c src/io.c src/smtp.c src/tsip.c src/tls.c src/bwcrypto.c src/vault.c src/vaultweb.c src/net.c src/json.c src/library.c src/spotify.c src/fan.c
 SOURCE += src/sha256.c src/totp.c src/notify.c src/main-prospero.c src/ps5compat.c
 
 WOLF_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(WOLF_SRC))
@@ -45,7 +45,7 @@ src/gwscript.h: gateway/ps5nas-gateway.sh tools/embed.py
 	python3 tools/embed.py $< $@ gateway_script
 
 ps5nas.elf: $(SOURCE) src/webui.h src/gwscript.h $(wildcard src/*.h) $(BUILD)/libwolf.a
-	$(CC) $(CFLAGS) -o $@ $(SOURCE) $(BUILD)/libwolf.a -lpthread
+	$(CC) $(CFLAGS) -o $@ $(SOURCE) $(BUILD)/libwolf.a -lpthread -lkernel_sys
 
 clean:
 	rm -rf ps5nas.elf $(BUILD)

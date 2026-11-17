@@ -37,6 +37,7 @@
 #include "sha256.h"
 #include "smtp.h"
 #include "spotify.h"
+#include "fan.h"
 #include "tsip.h"
 #include "totp.h"
 #include "sftp.h"
@@ -2645,6 +2646,37 @@ h_spotify_disconnect(req_t *r) {
 
 
 /* ------------------------------------------------------------------ */
+/* Temperatura y ventilador (solo administradores)                     */
+/* ------------------------------------------------------------------ */
+
+static int
+h_fan_get(req_t *r) {
+  sb_t b = {0};
+  char *j = fan_status_json();
+  if(!j) return send_err(r, 500, "Sin memoria");
+  sb_puts(&b, j);
+  free(j);
+  return send_json(r, 200, &b, NULL);
+}
+
+
+static int
+h_fan_settings(req_t *r) {
+  char v[16], err[128];
+  int mode = -1, trip = -1, cool = -1, fixed = -1, notify_on = -1;
+  if(read_body(r)) return send_err(r, 400, "Petición no válida");
+  if(!get_param(r->body, "mode", v, sizeof(v))) mode = atoi(v);
+  if(!get_param(r->body, "trip", v, sizeof(v))) trip = atoi(v);
+  if(!get_param(r->body, "cool", v, sizeof(v))) cool = atoi(v);
+  if(!get_param(r->body, "fixed", v, sizeof(v))) fixed = atoi(v);
+  if(!get_param(r->body, "notify", v, sizeof(v))) notify_on = !strcmp(v, "1");
+  if(fan_configure(mode, trip, cool, fixed, notify_on, err, sizeof(err))) return send_err(r, 400, err);
+  LOG_PRINTF("ps5share: '%s' cambió los ajustes del ventilador\n", r->user.name);
+  return send_ok(r);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Enrutado                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -2715,6 +2747,8 @@ static const route_t routes[] = {
   {"POST", "/api/admin/spotify/finish", h_spotify_finish,      2},
   {"POST", "/api/admin/spotify/sync",   h_spotify_sync,        2},
   {"POST", "/api/admin/spotify/disconnect", h_spotify_disconnect, 2},
+  {"GET",  "/api/admin/fan",            h_fan_get,             2},
+  {"POST", "/api/admin/fan",            h_fan_settings,        2},
 };
 
 

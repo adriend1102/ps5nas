@@ -1,22 +1,24 @@
 /* ps5share - vigilancia de temperatura y control del ventilador
    Copyright (C) 2026  ps5share contributors.  GPLv3, ver LICENSE.
 
-   Lectura de sensores y acceso al ventilador basados en Breeze
-   (https://github.com/MiladRTX/Breeze, GPLv3, (C) Milad):
-   - sceKernelGetCpuTemperature / sceKernelGetSocSensorTemperature /
-     sceKernelGetCurrentFanDuty para leer;
-   - ioctl 0xC01C8F08 (leer) y 0xC01C8F07 (escribir) sobre /dev/icc_fan
-     para el objetivo de temperatura del canal 0 (bytes 4..7, en 1/256 °C).
+   Lectura de sensores basada en Breeze (https://github.com/MiladRTX/Breeze,
+   GPLv3, (C) Milad).  Los modos son los de Machete IA / PS5SD
+   (ps5/fan/fan_policy.h, GPLv3), que a su vez siguen drakmor/fan_target:
 
-   Reglas para convivir con otras apps que también tocan el ventilador
-   (Machete IA, Breeze, el ayudante de PS5Upload):
-   - Solo se escribe cuando hace falta y se recuerda qué se escribió.
-   - Si al volver a mirar el objetivo es otro distinto del de fábrica, lo
-     ha puesto otra app: PS5NAS no se pelea con ella (lo indica en la web).
-   - Al terminar una intervención se deja el valor que había antes, y solo
-     si nadie lo ha cambiado mientras tanto.
-   - Nunca se escribe un objetivo mayor de 91 °C (el de fábrica) ni menor
-     de FAN_MIN_C: en el peor caso el ventilador gira más de la cuenta.  */
+   - La consola acelera el ventilador para no pasar de su «objetivo» de
+     temperatura (/dev/icc_fan, objeto autoservo, canal 0).  El de fábrica
+     suele ser 91 °C.  Los modos solo bajan ese objetivo; quien decide la
+     velocidad sigue siendo la consola.
+   - Silencioso: el de la consola.  Equilibrado: 3 °C menos.  Frío: 6 °C
+     menos.  Manual: el que elijas (70-95 °C, nunca por encima del de la
+     consola).  Ningún modo baja de 70 °C.
+   - Se baja un grado cada 20 s (bajarlo de golpe pone el ventilador al
+     máximo en dos segundos) y se sube de golpe.
+   - Si la consola sube su objetivo (al abrir o cerrar un juego), ese es el
+     nuevo de fábrica.  Si otra app lo baja por debajo del nuestro, PS5NAS no
+     se pelea con ella hasta que lo vuelva a subir.
+   - El de fábrica y el último escrito se guardan en fan.conf, así tras un
+     cuelgue se sabe a qué valor volver.  */
 
 #include "fan.h"
 
@@ -39,10 +41,7 @@
 #define TICK_S        2       /* cada cuánto se mira */
 #define HIST_STEP_S   30      /* un punto del historial cada 30 s */
 #define HIST_N        2880    /* 24 h */
-#define HYST_C        8       /* se vuelve a la normalidad 8 °C por debajo… */
-#define CALM_S        60      /* …tras 60 s seguidos */
-
-#define STOCK_DEFAULT (91 * 256)
+#define FAN_STEP_S    20      /* se baja un grado cada 20 s */
 
 typedef struct {
   int16_t cpu, soc, duty, tgt;   /* -1: sin dato; tgt en °C */
@@ -52,32 +51,29 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_path[512];
 
 /* Ajustes */
-static int g_mode = FAN_MODE_PROTECT;
-static int g_trip = 80;
-static int g_cool = 65;
-static int g_fixed = 70;
+static int g_mode = FAN_MODE_QUIET;
+static int g_manual = 85;
 static int g_notify = 1;
+static int g_saved_stock = -1, g_saved_written = -1;   /* de fan.conf (tras un cuelgue) */
+static int g_conf_new = 0;       /* fan.conf ya es del formato con modos de Machete */
 
 /* Lecturas */
 static int g_sensors = 0, g_icc = 0;
 static int g_cpu = -1, g_soc = -1, g_duty = -1, g_tgt = -1;  /* g_tgt en 1/256 °C */
-static int g_stock = STOCK_DEFAULT;
 
-/* Control */
-static int g_ours = -1;          /* último objetivo escrito por PS5NAS */
-static int g_before = -1;        /* el que había antes de intervenir */
-static int g_active = 0;         /* intervención (modo protección o fijo) en curso */
-static int g_conflict = 0;       /* otra app controla el ventilador */
-static int g_takeover = 0;       /* aplicar el modo fijo aunque haya otra app (tras guardar) */
-static time_t g_since = 0;
-static time_t g_calm_since = 0;
+/* Control (en °C) */
+static int g_stock = -1;         /* objetivo de la consola */
+static int g_written = -1;       /* lo último que escribimos, si está por debajo del de fábrica */
+static int g_wanted = -1;        /* lo que pide el modo */
+static int g_other = 0;          /* otra app lo ha bajado más: no se toca */
+static time_t g_last_step = 0;
+static time_t g_hot_warned = 0;
 
 /* Historial */
 static hpoint_t g_hist[HIST_N];
 static int g_hhead = 0, g_hcount = 0;
 static time_t g_hend = 0;
 static int g_wmax_cpu = -1, g_wmax_soc = -1;
-
 
 /* ------------------------------------------------------------------ */
 /* Hardware                                                            */
@@ -145,6 +141,14 @@ hw_set_target(int c256) {
   return 0;
 }
 
+#elif defined(FAN_SIM)  /* pruebas: consola simulada (test/fan_sim.c) */
+
+extern int sim_cpu, sim_target, sim_writes;
+static void hw_read(int *cpu, int *soc, int *duty) { *cpu = sim_cpu; *soc = sim_cpu - 10; *duty = 50; }
+#define ICC_BUF 32
+static int  hw_target(unsigned char *obj) { (void)obj; return sim_target * 256; }
+static int  hw_set_target(int c256) { sim_target = c256 / 256; sim_writes++; return 0; }
+
 #else  /* Linux: sin sensores */
 
 static void hw_read(int *cpu, int *soc, int *duty) { *cpu = *soc = *duty = -1; }
@@ -164,17 +168,10 @@ clampi(int v, int lo, int hi) {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+/* Un objetivo «de consola»: grados enteros entre 60 y 100. */
 static int
-stock_ok(int c256) {
-  /* Valores de fábrica: grados enteros entre 60 y 91 (77 lo escriben
-     otras herramientas, no el firmware). */
-  return c256 >= 60 * 256 && c256 <= STOCK_DEFAULT && c256 % 256 == 0 && c256 != 77 * 256;
-}
-
-/* Valores que pone el propio firmware (91 °C, y 86 °C en algunos casos). */
-static int
-is_fw(int c256) {
-  return c256 == STOCK_DEFAULT || c256 == 86 * 256 || c256 == g_stock;
+stock_ok(int c) {
+  return c >= 60 && c <= 100;
 }
 
 static void
@@ -187,12 +184,11 @@ load_conf(void) {
     if(!eq) continue;
     *eq = 0;
     int v = atoi(eq + 1);
-    if(!strcmp(line, "mode") && v >= 0 && v <= 2) g_mode = v;
-    else if(!strcmp(line, "trip")) g_trip = clampi(v, 60, 90);
-    else if(!strcmp(line, "cool")) g_cool = clampi(v, FAN_MIN_C, 85);
-    else if(!strcmp(line, "fixed")) g_fixed = clampi(v, FAN_MIN_C, FAN_MAX_C);
+    if(!strcmp(line, "fanmode") && v >= 0 && v <= 3) { g_mode = v; g_conf_new = 1; }
+    else if(!strcmp(line, "manual")) g_manual = clampi(v, FAN_LOWEST_C, FAN_TOP_C);
     else if(!strcmp(line, "notify")) g_notify = v != 0;
-    else if(!strcmp(line, "stock") && stock_ok(v)) g_stock = v;
+    else if(!strcmp(line, "stockc") && stock_ok(v)) g_saved_stock = v;
+    else if(!strcmp(line, "written") && stock_ok(v)) g_saved_written = v;
   }
   fclose(f);
 }
@@ -203,8 +199,10 @@ save_conf(void) {
   snprintf(tmp, sizeof(tmp), "%s.tmp", g_path);
   FILE *f = fopen(tmp, "w");
   if(!f) return -1;
-  fprintf(f, "mode=%d\ntrip=%d\ncool=%d\nfixed=%d\nnotify=%d\nstock=%d\n",
-          g_mode, g_trip, g_cool, g_fixed, g_notify, g_stock);
+  fprintf(f, "fanmode=%d\nmanual=%d\nnotify=%d\n", g_mode, g_manual, g_notify);
+  /* Solo mientras hay un objetivo nuestro por debajo del de fábrica. */
+  if(g_stock > 0 && g_written > 0 && g_written < g_stock)
+    fprintf(f, "stockc=%d\nwritten=%d\n", g_stock, g_written);
   if(fclose(f)) return -1;
   return rename(tmp, g_path);
 }
@@ -213,6 +211,18 @@ save_conf(void) {
 /* ------------------------------------------------------------------ */
 /* Control                                                             */
 /* ------------------------------------------------------------------ */
+
+/* El objetivo que pide un modo (igual que fan_wanted de Machete). */
+static int
+wanted_for(int mode, int manual, int stock) {
+  int w = stock;
+  if(mode == FAN_MODE_BALANCED) w = stock - 3;
+  else if(mode == FAN_MODE_COOL) w = stock - 6;
+  else if(mode == FAN_MODE_MANUAL) w = manual;
+  if(w > stock) w = stock;
+  if(w < FAN_LOWEST_C) w = stock < FAN_LOWEST_C ? stock : FAN_LOWEST_C;
+  return w;
+}
 
 static void
 say(const char *fmt, ...) {
@@ -225,29 +235,6 @@ say(const char *fmt, ...) {
   if(g_notify) notify("PS5NAS: %s", msg);
 }
 
-/* Escribe C256 y lo recuerda.  Con g_lock. */
-static int
-write_target(int c256) {
-  c256 = clampi(c256, FAN_MIN_C * 256, FAN_MAX_C * 256);
-  if(hw_set_target(c256)) return -1;
-  g_ours = c256;
-  g_tgt = c256;
-  return 0;
-}
-
-/* Deja el valor de antes si el actual sigue siendo el nuestro.  Con g_lock. */
-static void
-release(int cur) {
-  if(g_ours >= 0 && cur == g_ours) {
-    int back = g_before >= 0 ? g_before : g_stock;
-    if(back > STOCK_DEFAULT) back = STOCK_DEFAULT;
-    hw_set_target(clampi(back, FAN_MIN_C * 256, FAN_MAX_C * 256));
-  }
-  g_ours = g_before = -1;
-  g_active = 0;
-  g_since = 0;
-}
-
 static void
 tick(void) {
   int cpu, soc, duty;
@@ -255,77 +242,79 @@ tick(void) {
   time_t now = time(NULL);
 
   hw_read(&cpu, &soc, &duty);
-  int cur = hw_target(obj);
+  int raw = hw_target(obj);
+  int cur = raw >= 0 ? (raw + 128) / 256 : -1;
 
   pthread_mutex_lock(&g_lock);
-  g_cpu = cpu; g_soc = soc; g_duty = duty; g_tgt = cur;
+  g_cpu = cpu; g_soc = soc; g_duty = duty; g_tgt = raw;
   g_sensors = cpu >= 0 || soc >= 0;
-  g_icc = cur >= 0;
-  int t = cpu > soc ? cpu : soc;
+  g_icc = raw >= 0;
+  int hot = cpu > soc ? cpu : soc;
 
-  if(g_icc && t > 0) {
-    switch(g_mode) {
-    case FAN_MODE_WATCH:
-      if(g_active) release(cur);
-      g_conflict = 0;
-      break;
-
-    case FAN_MODE_PROTECT:
-      if(!g_active) {
-        g_conflict = !is_fw(cur) && cur != g_ours;
-        if(t >= g_trip && cur > g_cool * 256) {
-          g_before = cur;
-          if(!write_target(g_cool * 256)) {
-            g_active = 1;
-            g_since = now;
-            g_calm_since = 0;
-            say("%d °C: ventilador acelerado (objetivo %d °C)", t, g_cool);
-          }
-        }
+  if(g_icc) {
+    if(g_stock < 0) {
+      /* Arranque: si sigue puesto lo que dejamos antes de un cuelgue, el de
+         fábrica es el que apuntamos entonces. */
+      if(g_saved_written > 0 && cur == g_saved_written && g_saved_stock > cur) {
+        g_stock = g_saved_stock;
+        g_written = cur;
+      } else if(!g_conf_new && cur > 0 && cur < 91) {
+        /* La versión anterior (protección automática) pudo dejar su objetivo
+           bajado: se toma como nuestro y el de fábrica, 91 °C. */
+        g_stock = 91;
+        g_written = cur;
+        g_conf_new = 1;
+        save_conf();
       } else {
-        if(cur != g_ours) {
-          if(is_fw(cur)) {
-            /* El firmware recarga su valor al abrir o cerrar un juego. */
-            write_target(g_ours);
-          } else {
-            /* Otra app ha tomado el control: no se pelea. */
-            g_ours = g_before = -1;
-            g_active = 0;
-            g_conflict = 1;
-            break;
+        g_stock = stock_ok(cur) ? cur : 91;
+      }
+      LOG_PRINTF("ps5share: objetivo de fábrica del ventilador %d °C (ahora %d °C)\n", g_stock, cur);
+    } else if(g_written > 0 && cur != g_written) {
+      if(cur > g_written) {
+        /* La consola ha recargado su valor (juego abierto o cerrado). */
+        if(stock_ok(cur)) g_stock = cur;
+        g_written = -1;
+        g_other = 0;
+        g_last_step = now;
+      } else {
+        /* Otra app lo ha bajado más: no se pelea. */
+        g_written = -1;
+        g_other = 1;
+      }
+    } else if(g_other && g_written < 0 && cur >= g_stock) {
+      g_other = 0;   /* la otra app lo ha devuelto */
+    } else if(g_written < 0 && !g_other && cur > g_stock && stock_ok(cur)) {
+      g_stock = cur;
+    }
+
+    g_wanted = wanted_for(g_mode, g_manual, g_stock);
+    if(!g_other) {
+      int next = cur;
+      if(g_wanted > cur) next = g_wanted;                                   /* subir: ya */
+      else if(g_wanted < cur && now - g_last_step >= FAN_STEP_S) next = cur - 1;  /* bajar: de uno en uno */
+      /* Solo se toca un objetivo que es el de fábrica o el nuestro. */
+      if(next != cur && (cur == g_stock || cur == g_written || g_written < 0)) {
+        if(!hw_set_target(next * 256)) {
+          unsigned char back[ICC_BUF];
+          int chk = hw_target(back);
+          if(chk >= 0 && (chk + 128) / 256 == next) {
+            g_written = next < g_stock ? next : -1;
+            g_tgt = chk;
+            cur = next;
+            g_last_step = now;
+            save_conf();
           }
-        }
-        if(t <= g_trip - HYST_C) {
-          if(!g_calm_since) g_calm_since = now;
-          if(now - g_calm_since >= CALM_S) {
-            release(g_ours);
-            say("temperatura normal (%d °C): ventilador como antes", t);
-          }
-        } else {
-          g_calm_since = 0;
         }
       }
-      break;
+    }
+  }
 
-    case FAN_MODE_FIXED: {
-      int want = g_fixed * 256;
-      if(cur == want) {
-        if(!g_active) { g_active = 1; g_since = now; g_ours = want; }
-        g_conflict = 0;
-      } else if(g_takeover || is_fw(cur) || (g_ours >= 0 && cur == g_ours)) {
-        if(!g_active) g_before = cur;
-        if(!write_target(want)) {
-          if(!g_active) g_since = now;
-          g_active = 1;
-          g_conflict = 0;
-        }
-      } else {
-        g_conflict = 1;   /* otra app ha puesto su propio objetivo */
-      }
-      g_takeover = 0;
-      break;
-    }
-    }
+  /* Aviso si se calienta mucho (una vez cada hora como mucho). */
+  if(hot >= FAN_HOT_C && now - g_hot_warned >= 3600) {
+    g_hot_warned = now;
+    pthread_mutex_unlock(&g_lock);
+    say("la consola está a %d °C", hot);
+    pthread_mutex_lock(&g_lock);
   }
 
   /* Historial: un punto cada HIST_STEP_S con la máxima del intervalo. */
@@ -337,7 +326,7 @@ tick(void) {
     p->cpu = (int16_t)g_wmax_cpu;
     p->soc = (int16_t)g_wmax_soc;
     p->duty = (int16_t)duty;
-    p->tgt = (int16_t)(cur >= 0 ? (cur + 128) / 256 : -1);
+    p->tgt = (int16_t)cur;
     g_hhead = (g_hhead + 1) % HIST_N;
     if(g_hcount < HIST_N) g_hcount++;
     g_hend = now;
@@ -380,33 +369,25 @@ fan_init(const char *confdir) {
 
 
 int
-fan_configure(int mode, int trip_c, int cool_c, int fixed_c, int notify_on,
-              char *err, size_t errlen) {
+fan_mode_from(const char *s) {
+  static const char *const names[] = {"quiet", "balanced", "cool", "manual"};
+  for(int i=0; i<4; i++) if(s && !strcmp(s, names[i])) return i;
+  return -1;
+}
+
+
+int
+fan_configure(int mode, int manual_c, int notify_on, char *err, size_t errlen) {
   pthread_mutex_lock(&g_lock);
-  int m = mode >= 0 ? mode : g_mode;
-  int tr = trip_c >= 0 ? trip_c : g_trip;
-  int co = cool_c >= 0 ? cool_c : g_cool;
-  int fx = fixed_c >= 0 ? fixed_c : g_fixed;
-  if(m < 0 || m > 2) {
+  if(mode > 3 || (manual_c >= 0 && (manual_c < FAN_LOWEST_C || manual_c > FAN_TOP_C))) {
     pthread_mutex_unlock(&g_lock);
-    snprintf(err, errlen, "Modo no válido");
+    snprintf(err, errlen, mode > 3 ? "Modo no válido" : "Temperaturas no válidas");
     return -1;
   }
-  if(tr < 60 || tr > 90 || co < FAN_MIN_C || co > 85 || co >= tr ||
-     fx < FAN_MIN_C || fx > FAN_MAX_C) {
-    pthread_mutex_unlock(&g_lock);
-    snprintf(err, errlen, "Temperaturas no válidas");
-    return -1;
-  }
-  int cur = g_tgt;
-  if(m != g_mode || (m == FAN_MODE_FIXED && fx != g_fixed) ||
-     (m == FAN_MODE_PROTECT && co != g_cool)) {
-    if(g_active) release(cur);
-    g_conflict = 0;
-    g_takeover = m == FAN_MODE_FIXED;   /* al guardarlo, el fijo se aplica ya */
-  }
-  g_mode = m; g_trip = tr; g_cool = co; g_fixed = fx;
+  if(mode >= 0) g_mode = mode;
+  if(manual_c >= 0) g_manual = manual_c;
   if(notify_on >= 0) g_notify = notify_on != 0;
+  g_other = 0;   /* al elegir un modo, se vuelve a aplicar */
   int rc = save_conf();
   pthread_mutex_unlock(&g_lock);
   if(rc) {
@@ -426,17 +407,18 @@ jint(char *buf, size_t len, size_t *o, int v) {
 
 char*
 fan_status_json(void) {
+  static const char *const names[] = {"quiet", "balanced", "cool", "manual"};
   size_t len = 4096 + (size_t)HIST_N * 24;
   char *b = malloc(len);
   size_t o = 0;
   if(!b) return NULL;
 
   pthread_mutex_lock(&g_lock);
+  int cur = g_tgt >= 0 ? (g_tgt + 128) / 256 : -1;
   const char *state = !g_icc ? "noicc"
-                    : g_mode == FAN_MODE_WATCH ? "watch"
-                    : g_conflict ? "other"
-                    : g_mode == FAN_MODE_FIXED ? (g_active ? "fixed" : "pending")
-                    : g_active ? "cooling" : "idle";
+                    : g_other ? "other"
+                    : g_mode == FAN_MODE_QUIET ? "quiet"
+                    : cur > g_wanted ? "lowering" : "holding";
   int max24 = -1;
   for(int i=0; i<g_hcount; i++) {
     const hpoint_t *p = &g_hist[i];
@@ -452,16 +434,19 @@ fan_status_json(void) {
   o += (size_t)snprintf(b + o, len - o, ",\"duty\":");
   jint(b, len, &o, g_duty);
   o += (size_t)snprintf(b + o, len - o, ",\"target\":");
-  if(g_tgt >= 0) o += (size_t)snprintf(b + o, len - o, "%.1f", g_tgt / 256.0);
-  else o += (size_t)snprintf(b + o, len - o, "null");
+  jint(b, len, &o, cur);
+  o += (size_t)snprintf(b + o, len - o, ",\"stock\":");
+  jint(b, len, &o, g_stock);
+  o += (size_t)snprintf(b + o, len - o, ",\"wanted\":");
+  jint(b, len, &o, g_wanted);
   o += (size_t)snprintf(b + o, len - o,
-        ",\"stock\":%d,\"mode\":%d,\"trip\":%d,\"cool\":%d,\"fixed\":%d,\"notify\":%s,"
-        "\"state\":\"%s\",\"since\":%lld,\"max24\":",
-        (g_stock + 128) / 256, g_mode, g_trip, g_cool, g_fixed, g_notify ? "true" : "false",
-        state, (long long)g_since);
+        ",\"mode\":\"%s\",\"manual\":%d,\"notify\":%s,\"state\":\"%s\",\"step_s\":%d,"
+        "\"lowest_c\":%d,\"top_c\":%d,\"hot_c\":%d,\"max24\":",
+        names[g_mode], g_manual, g_notify ? "true" : "false", state, FAN_STEP_S,
+        FAN_LOWEST_C, FAN_TOP_C, FAN_HOT_C);
   jint(b, len, &o, max24);
-  o += (size_t)snprintf(b + o, len - o, ",\"min_c\":%d,\"max_c\":%d,\"hist_step\":%d,\"hist_end\":%lld,\"hist\":[",
-                        FAN_MIN_C, FAN_MAX_C, HIST_STEP_S, (long long)g_hend);
+  o += (size_t)snprintf(b + o, len - o, ",\"hist_step\":%d,\"hist_end\":%lld,\"hist\":[",
+                        HIST_STEP_S, (long long)g_hend);
   int start = (g_hhead - g_hcount + HIST_N) % HIST_N;
   for(int i=0; i<g_hcount && o + 32 < len; i++) {
     const hpoint_t *p = &g_hist[(start + i) % HIST_N];

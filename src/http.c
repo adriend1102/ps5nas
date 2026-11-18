@@ -2665,14 +2665,13 @@ h_fan_get(req_t *r) {
 static int
 h_fan_settings(req_t *r) {
   char v[16], err[128];
-  int mode = -1, trip = -1, cool = -1, fixed = -1, notify_on = -1;
+  int mode = -1, manual = -1, notify_on = -1;
   if(read_body(r)) return send_err(r, 400, "Petición no válida");
-  if(!get_param(r->body, "mode", v, sizeof(v))) mode = atoi(v);
-  if(!get_param(r->body, "trip", v, sizeof(v))) trip = atoi(v);
-  if(!get_param(r->body, "cool", v, sizeof(v))) cool = atoi(v);
-  if(!get_param(r->body, "fixed", v, sizeof(v))) fixed = atoi(v);
+  if(!get_param(r->body, "mode", v, sizeof(v)) && (mode = fan_mode_from(v)) < 0)
+    return send_err(r, 400, "Modo no válido");
+  if(!get_param(r->body, "manual", v, sizeof(v))) manual = atoi(v);
   if(!get_param(r->body, "notify", v, sizeof(v))) notify_on = !strcmp(v, "1");
-  if(fan_configure(mode, trip, cool, fixed, notify_on, err, sizeof(err))) return send_err(r, 400, err);
+  if(fan_configure(mode, manual, notify_on, err, sizeof(err))) return send_err(r, 400, err);
   LOG_PRINTF("ps5share: '%s' cambió los ajustes del ventilador\n", r->user.name);
   return send_ok(r);
 }

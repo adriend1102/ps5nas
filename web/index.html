@@ -662,9 +662,9 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px;wor
         <div id="fan-manual" class="hidden" style="margin-top:10px">
           <label class="f">Temperatura objetivo (°C)</label>
           <div class="row" style="gap:6px;align-items:center">
-            <button type="button" class="btn" id="fan-m-">&minus;</button>
+            <button type="button" class="btn" id="fan-mdown">&minus;</button>
             <input type="number" id="fan-m" min="70" max="95" step="1" style="width:90px">
-            <button type="button" class="btn" id="fan-m+">+</button>
+            <button type="button" class="btn" id="fan-mup">+</button>
           </div>
         </div>
         <p class="hint" id="fan-note"></p>
@@ -2263,8 +2263,8 @@ function fanManual(v){
   clearTimeout(FANMT);
   FANMT = setTimeout(() => fanSave({manual: v}), 600);
 }
-$("#fan-m-").onclick = () => fanManual(+$("#fan-m").value - 1);
-$("#fan-m+").onclick = () => fanManual(+$("#fan-m").value + 1);
+$("#fan-mdown").onclick = () => fanManual(+$("#fan-m").value - 1);
+$("#fan-mup").onclick = () => fanManual(+$("#fan-m").value + 1);
 $("#fan-m").onchange = () => fanManual(parseInt($("#fan-m").value, 10));
 $("#fan-notify").onchange = () => fanSave({notify: $("#fan-notify").checked ? "1" : "0"});
 function drawFan(){
